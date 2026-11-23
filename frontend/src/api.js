@@ -24,6 +24,8 @@ const json = (body, method = "POST") => ({
 export const api = {
   health:         ()     => request("/health"),
   metrics:        ()     => request("/metrics"),
+  stats:          ()     => request("/stats"),
+  similar:        (id)   => request(`/similar?id=${encodeURIComponent(id)}`),
   samples:        ()     => request("/samples"),
   sample:         (name) => request(`/samples/${encodeURIComponent(name)}`),
   extract:        (file) => { const f = new FormData(); f.append("file", file); return request("/extract", { method: "POST", body: f }); },

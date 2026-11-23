@@ -150,14 +150,18 @@ def test_heldout_predictions_match_notebook_metrics():
     with open(nlp.ARTIFACTS / "heldout.csv", newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     metrics = __import__("json").loads((nlp.ARTIFACTS / "metrics.json").read_text(encoding="utf-8"))
-    category_correct = sum(nlp.classify(r["complaint_text"])["category"] == r["category"] for r in rows)
-    priority_correct = sum(nlp.classify(r["complaint_text"])["priority"] == r["urgency"] for r in rows)
+    predictions = [nlp.classify_detailed(r["complaint_text"]) for r in rows]
+    category_correct = sum(p["category"] == r["category"] for p, r in zip(predictions, rows))
+    model_priority_correct = sum(p["model_priority"] == r["urgency"] for p, r in zip(predictions, rows))
+    hybrid_priority_correct = sum(p["priority"] == r["urgency"] for p, r in zip(predictions, rows))
     category_accuracy = category_correct / len(rows)
-    priority_accuracy = priority_correct / len(rows)
+    model_priority_accuracy = model_priority_correct / len(rows)
+    hybrid_priority_accuracy = hybrid_priority_correct / len(rows)
     print(f"Held-out category accuracy: {category_accuracy:.4f} (metrics: {metrics['category']['test']['accuracy']:.4f})")
-    print(f"Held-out priority accuracy: {priority_accuracy:.4f} (metrics: {metrics['priority']['test']['accuracy']:.4f})")
+    print(f"Held-out priority accuracy model-only: {model_priority_accuracy:.4f}")
+    print(f"Held-out priority accuracy hybrid: {hybrid_priority_accuracy:.4f}")
     assert abs(category_accuracy - metrics["category"]["test"]["accuracy"]) <= 0.01
-    assert abs(priority_accuracy - metrics["priority"]["test"]["accuracy"]) <= 0.01
+    assert abs(model_priority_accuracy - metrics["priority"]["test"]["accuracy"]) <= 0.01
 
 
 def test_steps_and_pdf_letter_extraction():
@@ -208,3 +212,41 @@ def test_existing_database_status_migration(tmp_path, monkeypatch):
     rows = __import__("db").get_history()
     assert rows[0]["text"] == "existing grievance"
     assert rows[0]["status"] == "pending" and rows[0]["resolved_at"] is None
+
+
+def test_similar_grievances_endpoint():
+    text = "There has been no hot water in Cedar Hall for several days."
+    with TestClient(app) as c:
+        first = c.post("/api/analyze", json={"text": text}).json()
+        second = c.post("/api/analyze", json={"text": text}).json()
+        assert "explanation" in second and "priority_source" in second and "similar" in second
+        assert "explanation" in second and "priority_source" in second and "similar" in second
+        matches = c.get("/api/similar", params={"id": second["id"]})
+        assert matches.status_code == 200
+        assert matches.json()[0]["id"] == first["id"]
+        assert matches.json()[0]["similarity"] >= 0.35
+        assert c.get("/api/similar", params={"id": 999999}).status_code == 404
+
+
+def test_stats_endpoint():
+    with TestClient(app) as c:
+        c.post("/api/analyze", json={"text": "The library Wi-Fi keeps disconnecting."})
+        stats = c.get("/api/stats")
+        assert stats.status_code == 200
+        data = stats.json()
+        assert data["total"] >= 1
+        assert data["pending"] + data["resolved"] == data["total"]
+        assert len(data["per_day"]) == 14
+        assert "average_sentiment_score" in data and "by_language" in data
+
+
+def test_explanation_and_priority_rule():
+    result = nlp.classify_detailed("I am being harassed and feel unsafe.")
+    assert result["priority"] == "Critical"
+    assert any(rule["term"] == "harassment" for rule in result["matched_rules"])
+    assert len(result["explanation"]["category_terms"]) <= 5
+    assert len(result["explanation"]["priority_terms"]) <= 5
+    assert nlp._priority_rules("a threat was made", "Low")[1] == "rule"
+    assert nlp._priority_rules("I enjoy fireworks", "Low")[1] == "model"
+    assert nlp._priority_rules("No water for three days", "Low")[0] == "High"
+    assert nlp._priority_rules("No water for three days", "Low")[0] == "High"

@@ -39,6 +39,32 @@ export const StatusBadge = ({ value = "pending" }) => (
   <span className={`status-badge status-${value}`}>{value === "resolved" ? "Resolved" : "Pending"}</span>
 );
 
+function HighlightTerms({ text, terms }) {
+  const patterns = [...new Set((terms || []).map((t) => t.term).filter(Boolean))]
+    .sort((a, b) => b.length - a.length)
+    .map((term) => term.split(/\s+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?:ing|ed|s)?").join("\\s+"));
+  if (!patterns.length) return <p className="highlight">{text}</p>;
+  const regex = new RegExp(`(${patterns.join("|")})`, "gi");
+  return <p className="highlight contribution-text">{text.split(regex).map((part, i) => { regex.lastIndex = 0; return regex.test(part) ? <mark key={i} className="contribution-highlight">{part}</mark> : part; })}</p>;
+}
+
+function TermWeights({ title, terms = [] }) {
+  const max = Math.max(0.0001, ...terms.map((t) => Math.abs(t.weight)));
+  return <div className="term-group"><h4>{title}</h4>{terms.length ? terms.map((item, i) => (
+    <div className="term-weight" key={`${item.term}-${i}`}><span className="term-chip">{item.term}</span><div className="term-track"><span style={{ width: `${Math.abs(item.weight) / max * 100}%` }} /></div><code>{item.weight > 0 ? "+" : ""}{item.weight.toFixed(3)}</code></div>
+  )) : <p className="muted small">No vocabulary terms contributed for this text.</p>}</div>;
+}
+
+function SimilarContent({ matches = [] }) {
+  return <>
+    {matches.some((m) => m.similarity >= 0.7) && <Alert kind="info">Possible duplicate: a past grievance is highly similar.</Alert>}
+    {matches.length ? <div className="similar-list">{matches.map((m) => <div className="similar-item" key={m.id}>
+      <div><StatusBadge value={m.status} /><span className="similar-score">{Math.round(m.similarity * 100)}% similar</span></div>
+      <p>{m.english_text}</p><span className="muted small">{m.category} · #{m.id}</span>
+    </div>)}</div> : <p className="muted small">No close matches found in saved grievances.</p>}
+  </>;
+}
+
 export const Stat = ({ label, value, note }) => (
   <div className="stat"><div className="stat-label">{label}</div><div className="stat-value">{value}</div>{note && <div className="stat-note">{note}</div>}</div>
 );
@@ -142,6 +168,8 @@ export function ResultCard({ r }) {
   return (
     <div className="stack">
       {r.warning && <Alert kind="error">{r.warning}</Alert>}
+      {r.needs_review && <div className="review-row"><span className="review-badge">Needs human review</span><div className="review-categories">{r.top_categories.map((item) => <span className="review-chip" key={item.category}>{item.category} · {Math.round(item.probability * 100)}%</span>)}</div></div>}
+      {r.priority_source === "rule" && <p className="rule-note">Escalated by safety rule: {r.matched_rules.map((m) => m.term).join(", ")}</p>}
       <div className="status-row"><StatusBadge value={status} /><Button variant="secondary" onClick={toggleStatus}>{status === "resolved" ? "Reopen" : "Mark resolved"}</Button></div>
       {statusError && <Alert>{statusError}</Alert>}
       <div className="grid-4">
@@ -150,6 +178,11 @@ export function ResultCard({ r }) {
         <Stat label="Sentiment" value={r.sentiment} note={`score ${r.sentiment_score > 0 ? "+" : ""}${r.sentiment_score}`} />
         <Stat label="Language" value={LANG[r.language] || r.language.toUpperCase()} note={r.translated_by ? `translated by ${r.translated_by}` : "no translation needed"} />
       </div>
+      <details className="card explanation-card"><summary>Why this result?</summary><div className="explanation-content">
+        <div className="grid-2"><TermWeights title="Category terms" terms={r.explanation?.category_terms} /><TermWeights title="Priority terms" terms={r.explanation?.priority_terms} /></div>
+        <div><h4>Contributing words in the English text</h4><HighlightTerms text={r.english_text} terms={[...(r.explanation?.category_terms || []), ...(r.explanation?.priority_terms || [])]} /></div>
+      </div></details>
+      <Card title="Similar grievances already reported"><SimilarContent matches={r.similar} /></Card>
       <div className="grid-2">
         <Card title="English text with entities" subtitle="Named entities found by our rule-based NER are highlighted.">
           <Highlight text={r.english_text} entities={r.entities} />
@@ -201,9 +234,9 @@ export function BatchResults({ data }) {
         </div>
         {statusError && <Alert>{statusError}</Alert>}
         <div className="table-wrap"><table>
-          <thead><tr><th>Select</th><th>Grievance</th><th>Category</th><th>Priority</th><th>Sentiment</th><th>Status</th></tr></thead>
+          <thead><tr><th>Select</th><th>Grievance</th><th>Category</th><th>Priority</th><th>Sentiment</th><th>Status</th><th>Similar</th></tr></thead>
           <tbody>{orderedRows.map((r) => (
-            <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e) => setSelected(e.target.checked ? [...selected, r.id] : selected.filter((id) => id !== r.id))} aria-label={`Select grievance ${r.id}`} /></td><td className="cell-text" title={r.text}>{r.text}</td><td>{r.category}</td><td><Priority value={r.priority} /></td><td>{r.sentiment}</td><td><StatusBadge value={r.status} /></td></tr>
+            <tr key={r.id}><td><input type="checkbox" checked={selected.includes(r.id)} onChange={(e) => setSelected(e.target.checked ? [...selected, r.id] : selected.filter((id) => id !== r.id))} aria-label={`Select grievance ${r.id}`} /></td><td className="cell-text" title={r.text}>{r.text}</td><td>{r.category}</td><td><Priority value={r.priority} /></td><td>{r.sentiment}</td><td><StatusBadge value={r.status} /></td><td><details><summary>{r.similar?.length || 0} matches</summary><SimilarContent matches={r.similar} /></details></td></tr>
           ))}</tbody>
         </table></div>
       </Card>

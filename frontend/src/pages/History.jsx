@@ -25,13 +25,20 @@ export default function History() {
     if (!window.confirm("Delete all saved grievances?")) return;
     try { await api.clearHistory(); setRows([]); } catch (e) { setError(e.message); }
   };
+  const exportCsv = () => {
+    const columns = ["id", "created_at", "text", "category", "priority", "sentiment", "language", "status"];
+    const quote = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const csv = [columns.map(quote).join(","), ...rows.map((r) => columns.map((key) => quote(r[key])).join(","))].join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = "resolveai-history.csv"; link.click(); URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="stack">
       <div><h1>History</h1><p className="muted">Every grievance you analyse is saved here.</p></div>
       {error && <Alert onClose={() => setError(null)}>{error}</Alert>}
       <Card title={rows ? `${rows.filter((r) => r.status === "pending").length} pending · ${rows.filter((r) => r.status === "resolved").length} resolved` : "Saved grievances"}
-            actions={rows?.length ? <Button variant="ghost" onClick={clearAll}>Clear all</Button> : null}>
+            actions={rows?.length ? <div className="row history-actions"><Button variant="secondary" onClick={exportCsv}>Export CSV</Button><Button variant="ghost" onClick={clearAll}>Clear all</Button></div> : null}>
         {rows === null ? <div className="center"><Spinner /></div> : rows.length === 0 ? (
           <EmptyState title="Nothing saved yet" text="Analysed grievances will appear here." />
         ) : (

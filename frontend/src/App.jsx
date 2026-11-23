@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import Analyze from "./pages/Analyze.jsx";
 import Walkthrough from "./pages/Walkthrough.jsx";
 import History from "./pages/History.jsx";
+import Dashboard from "./pages/Dashboard.jsx";
 
 /* Hash-based page switch: #/, #/walkthrough, #/history.
    No router library needed. Refresh and back button work. */
@@ -17,6 +18,7 @@ function useHash() {
 
 const NAV = [
   { hash: "#/", label: "Analyze" },
+  { hash: "#/dashboard", label: "Dashboard" },
   { hash: "#/walkthrough", label: "Walkthrough" },
   { hash: "#/history", label: "History" },
 ];
@@ -24,6 +26,14 @@ const NAV = [
 export default function App() {
   const hash = useHash();
   const page = hash.replace("#", "") || "/";
+  const [dark, setDark] = useState(() => {
+    try { return localStorage.getItem("resolveai-theme") === "dark"; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    try { localStorage.setItem("resolveai-theme", dark ? "dark" : "light"); } catch {}
+  }, [dark]);
 
   return (
     <div className="shell">
@@ -43,11 +53,13 @@ export default function App() {
               </a>
             ))}
           </nav>
+          <button className="theme-toggle" type="button" onClick={() => setDark((value) => !value)} aria-label={dark ? "Use light mode" : "Use dark mode"}>{dark ? "☀ Light" : "☾ Dark"}</button>
         </div>
       </header>
       <main className="container main">
         {page === "/" || page === "" ? <Analyze />
          : page === "/walkthrough" ? <Walkthrough />
+         : page === "/dashboard" ? <Dashboard />
          : page === "/history" ? <History />
          : <Analyze />}
       </main>

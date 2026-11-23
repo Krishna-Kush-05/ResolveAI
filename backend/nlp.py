@@ -105,21 +105,80 @@ def get_top_tfidf_terms(cleaned: str, top_n: int = 8) -> list[dict]:
     ranked = sorted(zip(idx, x), key=lambda item: item[1], reverse=True)[:top_n]
     return [{"term": inv_vocab[i], "score": round(float(weight), 3)} for i, weight in ranked]
 
-def classify(text: str) -> dict:
-    """Predict category and priority for one grievance text using PortableModel."""
+_PRIORITY_RULES = {
+    "Critical": [
+        ("harassment", r"harass\w*"), ("ragging", r"ragging"), ("assault", r"assault\w*"),
+        ("threat", r"threat\w*"), ("suicide", r"suicid\w*"), ("self harm", r"self[\s-]+harm"),
+        ("fire", r"fire"), ("electric shock", r"electric\s+shock"),
+        ("medical emergency", r"medical\s+emergency"), ("ambulance", r"ambulance"),
+        ("unsafe", r"unsafe"), ("stalking", r"stalk\w*"),
+        ("discrimination", r"discriminat\w*"),
+    ],
+    "High": [
+        ("no water for days", r"no\s+(?:hot\s+)?water\s+for\s+(?:days|\w+\s+days)"), ("no heating", r"no\s+heating"),
+        ("deadline tomorrow", r"deadline\s+tomorrow"), ("exam tomorrow", r"exam\s+tomorrow"),
+        ("fee deadline", r"fee\s+deadline"), ("scholarship not received", r"scholarship\s+not\s+received"),
+        ("locked out", r"locked\s+out"), ("theft", r"theft"), ("stolen", r"stolen"),
+        ("infestation", r"infestation"), ("mold", r"mold"), ("safety hazard", r"safety\s+hazard"),
+    ],
+}
+_PRIORITY_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+
+def _priority_rules(text: str, model_priority: str) -> tuple[str, str, list[dict]]:
+    matches = []
+    for priority, rules in _PRIORITY_RULES.items():
+        for label, pattern in rules:
+            if re.search(rf"\b(?:{pattern})\b", text.lower()):
+                matches.append({"term": label, "priority": priority})
+    best_rule = min((m["priority"] for m in matches), key=_PRIORITY_ORDER.get, default=None)
+    if best_rule and _PRIORITY_ORDER[best_rule] < _PRIORITY_ORDER[model_priority]:
+        return best_rule, "rule", matches
+    return model_priority, "model", matches
+
+def _explain(cleaned: str, target: str, label: str, top_n: int = 5) -> list[dict]:
+    model = get_model()
+    classes, coef, _ = model.heads[target]
+    idx, values = model.vectorize(cleaned)
+    if len(idx) == 0:
+        return []
+    class_index = classes.index(label)
+    inv_vocab = {i: term for term, i in model.vocab.items()}
+    contributions = values * coef[class_index, idx]
+    ranked = sorted(zip(idx, contributions), key=lambda pair: abs(float(pair[1])), reverse=True)[:top_n]
+    return [{"term": inv_vocab[i], "weight": round(float(weight), 4)} for i, weight in ranked]
+
+def classify_detailed(text: str) -> dict:
+    """Classify with model scores, compact feature contributions and domain rules."""
     model = get_model()
     cleaned = clean(text)
     category_probs = model.proba(cleaned, "category")
     priority_probs = model.proba(cleaned, "priority")
     cat = max(category_probs, key=category_probs.get)
-    pri = max(priority_probs, key=priority_probs.get)
+    model_priority = max(priority_probs, key=priority_probs.get)
+    pri, source, matched = _priority_rules(text, model_priority)
+    confidence = float(category_probs[cat])
+    top_categories = sorted(category_probs.items(), key=lambda pair: pair[1], reverse=True)[:3]
     return {
         "category": cat,
         "priority": pri,
-        "confidence": round(float(category_probs[cat]), 3),
+        "confidence": round(confidence, 3),
         "category_probs": {k: round(float(v), 3) for k, v in sorted(category_probs.items())},
         "priority_probs": {k: round(float(v), 3) for k, v in sorted(priority_probs.items())},
+        "priority_source": source,
+        "matched_rules": matched,
+        "explanation": {"category_terms": _explain(cleaned, "category", cat),
+                        "priority_terms": _explain(cleaned, "priority", model_priority)},
+        "needs_review": confidence < 0.5,
+        "top_categories": [{"category": name, "probability": round(float(prob), 3)}
+                           for name, prob in top_categories] if confidence < 0.5 else [],
+        "model_priority": model_priority,
     }
+
+def classify(text: str) -> dict:
+    """Predict category and final priority using PortableModel and safety rules."""
+    result = classify_detailed(text)
+    result.pop("model_priority")
+    return result
 
 # ===================== SENTIMENT =====================
 _VADER = SentimentIntensityAnalyzer()
@@ -338,7 +397,7 @@ def extract_file(name: str, raw: bytes) -> dict:
 # ===================== FULL PIPELINE =====================
 def analyze(text: str, with_reply: bool = True) -> dict:
     english, lang, svc = to_english(text)
-    cls = classify(english)
+    cls = classify_detailed(english)
     sen, score = sentiment(english)
     ents = extract_entities(english)
     reply = make_reply(english, cls["category"], cls["priority"], sen, ents) if with_reply else None
@@ -353,10 +412,32 @@ def analyze(text: str, with_reply: bool = True) -> dict:
         "language": lang, "translated_by": svc,
         "category": cls["category"], "priority": cls["priority"],
         "confidence": cls["confidence"],
+        "explanation": cls["explanation"], "priority_source": cls["priority_source"],
+        "matched_rules": cls["matched_rules"], "needs_review": cls["needs_review"],
+        "top_categories": cls["top_categories"],
         "sentiment": sen, "sentiment_score": score,
         "entities": ents, "reply": reply,
         "warning": warning,
     }
+
+def find_similar(english_text: str, rows: list[dict], exclude_id: int | None = None) -> list[dict]:
+    """Find the closest stored grievances with the exported TF-IDF features."""
+    model = get_model()
+    query_idx, query_values = model.vectorize(clean(english_text))
+    if len(query_idx) == 0:
+        return []
+    query = dict(zip(query_idx.tolist(), query_values.tolist()))
+    matches = []
+    for row in rows:
+        if row["id"] == exclude_id:
+            continue
+        idx, values = model.vectorize(clean(row["english_text"]))
+        similarity = sum(query.get(int(i), 0.0) * float(v) for i, v in zip(idx, values))
+        if similarity >= 0.35:
+            matches.append({"id": row["id"], "english_text": row["english_text"][:140],
+                            "category": row["category"], "status": row["status"],
+                            "similarity": round(float(similarity), 3)})
+    return sorted(matches, key=lambda row: row["similarity"], reverse=True)[:3]
 
 # ===================== HELPOUT ROWS FOR WALKTHROUGH =====================
 def get_held_out_rows(n: int = 20) -> list[dict]:

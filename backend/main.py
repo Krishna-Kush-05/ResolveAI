@@ -100,6 +100,7 @@ def analyze(body: dict):
     result["status"] = "pending"
     result["resolved_at"] = None
     result["id"] = db.save(result)
+    result["similar"] = nlp.find_similar(result["english_text"], db.get_recent_for_similarity(500), result["id"])
     return result
 
 @app.post("/api/analyze/batch")
@@ -115,6 +116,7 @@ def analyze_batch(body: dict):
         r["status"] = "pending"
         r["resolved_at"] = None
         r["id"] = db.save(r)
+        r["similar"] = nlp.find_similar(r["english_text"], db.get_recent_for_similarity(500), r["id"])
     by = lambda k: {v: sum(1 for r in out if r[k] == v) for v in sorted({r[k] for r in out})}
     return {"count": len(out), "by_priority": by("priority"), "by_category": by("category"), "results": out}
 
@@ -162,6 +164,17 @@ def metrics():
     if not f.exists():
         raise HTTPException(404, "Metrics not available.")
     return json.loads(f.read_text())
+
+@app.get("/api/similar")
+def similar(id: int):
+    row = db.get_by_id(id)
+    if row is None:
+        raise HTTPException(404, "Record not found.")
+    return nlp.find_similar(row["english_text"], db.get_recent_for_similarity(500), id)
+
+@app.get("/api/stats")
+def stats():
+    return db.get_stats()
 
 # ===================== PIPELINE STEPS (Walkthrough) =====================
 @app.get("/api/steps")

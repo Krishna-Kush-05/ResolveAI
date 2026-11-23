@@ -12,8 +12,8 @@ export default function Analyze() {
   const [batch, setBatch] = useState(null);
   const [llmUnavailable, setLlmUnavailable] = useState(false);
   const [howOpen, setHowOpen] = useState(() => {
-    try { return localStorage.getItem("grievance-how-works") !== "closed"; }
-    catch { return true; }
+    try { return localStorage.getItem("grievance-how-works") === "open"; }
+    catch { return false; }
   });
 
   useEffect(() => { api.health().then((h) => setLlmUnavailable(!h.llm_configured)).catch(() => {}); }, []);
@@ -24,16 +24,18 @@ export default function Analyze() {
     return next;
   });
 
-  const analyze = async () => {
-    if (!source && text.trim().length < 5) {
-      setError(text.trim() ? "Please enter at least 5 characters so we can understand the grievance." : "Enter a grievance or choose a sample or file before analysing.");
+  const analyze = async (exampleText = null) => {
+    const activeSource = exampleText === null ? source : null;
+    const activeText = exampleText === null ? text : exampleText;
+    if (!activeSource && activeText.trim().length < 5) {
+      setError(activeText.trim() ? "Please enter at least 5 characters so we can understand the grievance." : "Enter a grievance or choose a sample or file before analysing.");
       return;
     }
     setBusy(true); setError(null); setSingle(null); setBatch(null);
     try {
-      if (source) setBatch(await api.analyzeBatch(source.texts));
+      if (activeSource) setBatch(await api.analyzeBatch(activeSource.texts));
       else {
-        const result = await api.analyze(text.trim());
+        const result = await api.analyze(activeText.trim());
         setSingle(result);
         if (result.reply?.source === "offline template" && result.reply?.note?.includes("unavailable")) setLlmUnavailable(true);
       }
@@ -43,7 +45,15 @@ export default function Analyze() {
 
   return (
     <div className="stack">
-      <div><h1>Analyze grievances</h1><p className="muted">Classifies a student grievance by category and priority, detects sentiment and language, extracts key entities, and drafts a reply.</p></div>
+      <section className="analyze-hero">
+        <div><p className="hero-brand">ResolveAI</p><h1>Turn student concerns into clear next steps.</h1><p className="muted">Classify, prioritize and understand a grievance, then track what happens next.</p></div>
+        <div className="example-chips" aria-label="Try an example">
+          <button onClick={() => { setText("There has been no hot water in Cedar Hall for three days."); setSource(null); analyze("There has been no hot water in Cedar Hall for three days."); }}>Housing example</button>
+          <button onClick={() => { setText("The campus Wi-Fi keeps disconnecting in the library."); setSource(null); analyze("The campus Wi-Fi keeps disconnecting in the library."); }}>IT Support example</button>
+          <button onClick={() => { setText("My scholarship payment has not arrived and the fee deadline is tomorrow."); setSource(null); analyze("My scholarship payment has not arrived and the fee deadline is tomorrow."); }}>Financial Aid example</button>
+          <button onClick={() => { const value = "मेरे छात्रावास में तीन दिनों से पानी नहीं है।"; setText(value); setSource(null); analyze(value); }}>हिंदी example</button>
+        </div>
+      </section>
       {llmUnavailable && <Alert kind="info">AI-drafted replies are currently unavailable. Classification and sentiment still work.</Alert>}
       <Card className="how-card">
         <button className="how-toggle" type="button" onClick={toggleHow} aria-expanded={howOpen}>How it works <span aria-hidden="true">{howOpen ? "−" : "+"}</span></button>

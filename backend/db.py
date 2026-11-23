@@ -3,7 +3,7 @@ Uses the standard library sqlite3 — no ORM, no extra dependencies.
 One table: grievances."""
 import json, sqlite3, os
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 DB_PATH = os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "grievance.db"))
 
@@ -69,6 +69,37 @@ def get_history(limit: int = 100) -> list[dict]:
             "SELECT * FROM grievances ORDER BY id DESC LIMIT ?",
             (min(max(1, limit), 200),)).fetchall()
     return [_row_to_dict(r) for r in rows]
+
+def get_by_id(gid: int) -> dict | None:
+    with _conn() as c:
+        row = c.execute("SELECT * FROM grievances WHERE id = ?", (gid,)).fetchone()
+    return _row_to_dict(row) if row else None
+
+def get_recent_for_similarity(limit: int = 500) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute("""SELECT id, english_text, category, status
+                             FROM grievances ORDER BY id DESC LIMIT ?""", (min(max(1, limit), 500),)).fetchall()
+    return [dict(row) for row in rows]
+
+def get_stats() -> dict:
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=13)
+    with _conn() as c:
+        total = c.execute("SELECT COUNT(*) FROM grievances").fetchone()[0]
+        status_counts = {row[0]: row[1] for row in c.execute("SELECT status, COUNT(*) FROM grievances GROUP BY status")}
+        categories = {row[0]: row[1] for row in c.execute("SELECT category, COUNT(*) FROM grievances GROUP BY category")}
+        priorities = {row[0]: row[1] for row in c.execute("SELECT priority, COUNT(*) FROM grievances GROUP BY priority")}
+        languages = {row[0]: row[1] for row in c.execute("SELECT language, COUNT(*) FROM grievances GROUP BY language")}
+        average = c.execute("SELECT AVG(sentiment_score) FROM grievances").fetchone()[0]
+        daily_rows = {row[0]: row[1] for row in c.execute(
+            "SELECT date(created_at), COUNT(*) FROM grievances WHERE date(created_at) >= ? GROUP BY date(created_at)",
+            (start.isoformat(),))}
+    days = [(start + timedelta(days=i)).isoformat() for i in range(14)]
+    return {
+        "total": total, "pending": status_counts.get("pending", 0), "resolved": status_counts.get("resolved", 0),
+        "by_category": categories, "by_priority": priorities, "average_sentiment_score": round(average or 0, 3),
+        "by_language": languages, "per_day": [{"date": day, "count": daily_rows.get(day, 0)} for day in days],
+    }
 
 def delete_one(gid: int) -> bool:
     """Delete a single grievance. Returns True if it existed."""
