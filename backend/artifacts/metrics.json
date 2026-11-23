@@ -1,0 +1,907 @@
+{
+ "dataset": {
+  "rows": 3000,
+  "train": 2100,
+  "val": 450,
+  "test": 450,
+  "avg_words": 14.3,
+  "category_counts": {
+   "IT Support": 530,
+   "Academic": 459,
+   "Facilities": 444,
+   "Housing": 442,
+   "Campus Life": 437,
+   "Financial Aid": 436,
+   "Dining Services": 252
+  },
+  "priority_counts": {
+   "Medium": 1117,
+   "Low": 964,
+   "High": 565,
+   "Critical": 354
+  },
+  "vocab_raw": 4032,
+  "vocab_clean": 2985,
+  "tfidf_features": 3533,
+  "top_words": {
+   "Academic": [
+    "professor",
+    "course",
+    "advisor",
+    "grade",
+    "grad",
+    "request",
+    "lecture",
+    "requir",
+    "hist",
+    "math"
+   ],
+   "Campus Life": [
+    "campu",
+    "campu need",
+    "need",
+    "student",
+    "event",
+    "center",
+    "better",
+    "need better",
+    "outdoor",
+    "campu recreation"
+   ],
+   "Dining Services": [
+    "din hall",
+    "din",
+    "hall",
+    "serv",
+    "hall serv",
+    "soup",
+    "food",
+    "hall staff",
+    "staff",
+    "salad"
+   ],
+   "Facilities": [
+    "library",
+    "build",
+    "light",
+    "elevator",
+    "near",
+    "main",
+    "restroom",
+    "door",
+    "floor",
+    "automatic"
+   ],
+   "Financial Aid": [
+    "aid",
+    "financial",
+    "financial aid",
+    "need",
+    "loan",
+    "student",
+    "information",
+    "account",
+    "federal",
+    "scholarship"
+   ],
+   "Housing": [
+    "room",
+    "dorm",
+    "dorm room",
+    "roommate",
+    "ra",
+    "floor",
+    "hall",
+    "window",
+    "house",
+    "heat"
+   ],
+   "IT Support": [
+    "university",
+    "online",
+    "access",
+    "unable",
+    "software",
+    "network",
+    "email",
+    "requir",
+    "website",
+    "account"
+   ]
+  }
+ },
+ "category": {
+  "models": {
+   "Naive Bayes": {
+    "train_acc": 0.982,
+    "val_acc": 0.967,
+    "val_f1": 0.967
+   },
+   "Logistic Regression": {
+    "train_acc": 0.98,
+    "val_acc": 0.969,
+    "val_f1": 0.969
+   },
+   "Linear SVM": {
+    "train_acc": 0.99,
+    "val_acc": 0.971,
+    "val_f1": 0.971
+   }
+  },
+  "overfit_demo": [
+   {
+    "C": 100,
+    "train_acc": 1.0,
+    "val_acc": 0.973
+   },
+   {
+    "C": 10,
+    "train_acc": 1.0,
+    "val_acc": 0.973
+   },
+   {
+    "C": 1,
+    "train_acc": 0.98,
+    "val_acc": 0.969
+   },
+   {
+    "C": 0.1,
+    "train_acc": 0.947,
+    "val_acc": 0.953
+   }
+  ],
+  "best": "Linear SVM",
+  "baseline_acc": 0.176,
+  "test": {
+   "accuracy": 0.958,
+   "precision": 0.958,
+   "recall": 0.958,
+   "f1": 0.957
+  },
+  "labels": [
+   "Academic",
+   "Campus Life",
+   "Dining Services",
+   "Facilities",
+   "Financial Aid",
+   "Housing",
+   "IT Support"
+  ],
+  "cm": [
+   [
+    68,
+    1,
+    0,
+    0,
+    0,
+    0,
+    0
+   ],
+   [
+    2,
+    56,
+    0,
+    4,
+    1,
+    0,
+    2
+   ],
+   [
+    0,
+    3,
+    33,
+    2,
+    0,
+    0,
+    0
+   ],
+   [
+    0,
+    2,
+    0,
+    64,
+    0,
+    1,
+    0
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    66,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    0,
+    66,
+    0
+   ],
+   [
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    78
+   ]
+  ],
+  "per_class": {
+   "Academic": {
+    "precision": 0.971,
+    "recall": 0.986,
+    "f1": 0.978,
+    "support": 69
+   },
+   "Campus Life": {
+    "precision": 0.903,
+    "recall": 0.862,
+    "f1": 0.882,
+    "support": 65
+   },
+   "Dining Services": {
+    "precision": 1.0,
+    "recall": 0.868,
+    "f1": 0.93,
+    "support": 38
+   },
+   "Facilities": {
+    "precision": 0.914,
+    "recall": 0.955,
+    "f1": 0.934,
+    "support": 67
+   },
+   "Financial Aid": {
+    "precision": 0.971,
+    "recall": 1.0,
+    "f1": 0.985,
+    "support": 66
+   },
+   "Housing": {
+    "precision": 0.985,
+    "recall": 1.0,
+    "f1": 0.992,
+    "support": 66
+   },
+   "IT Support": {
+    "precision": 0.975,
+    "recall": 0.987,
+    "f1": 0.981,
+    "support": 79
+   }
+  }
+ },
+ "priority": {
+  "models": {
+   "Naive Bayes": {
+    "train_acc": 0.846,
+    "val_acc": 0.611,
+    "val_f1": 0.601
+   },
+   "Logistic Regression": {
+    "train_acc": 0.88,
+    "val_acc": 0.607,
+    "val_f1": 0.608
+   },
+   "Linear SVM": {
+    "train_acc": 0.926,
+    "val_acc": 0.602,
+    "val_f1": 0.602
+   }
+  },
+  "overfit_demo": [
+   {
+    "C": 100,
+    "train_acc": 1.0,
+    "val_acc": 0.564
+   },
+   {
+    "C": 10,
+    "train_acc": 0.993,
+    "val_acc": 0.584
+   },
+   {
+    "C": 1,
+    "train_acc": 0.88,
+    "val_acc": 0.607
+   },
+   {
+    "C": 0.1,
+    "train_acc": 0.722,
+    "val_acc": 0.564
+   }
+  ],
+  "best": "Logistic Regression",
+  "baseline_acc": 0.371,
+  "test": {
+   "accuracy": 0.589,
+   "precision": 0.593,
+   "recall": 0.589,
+   "f1": 0.59
+  },
+  "labels": [
+   "Critical",
+   "High",
+   "Low",
+   "Medium"
+  ],
+  "cm": [
+   [
+    30,
+    12,
+    4,
+    8
+   ],
+   [
+    8,
+    45,
+    8,
+    23
+   ],
+   [
+    2,
+    9,
+    96,
+    38
+   ],
+   [
+    7,
+    30,
+    36,
+    94
+   ]
+  ],
+  "per_class": {
+   "Critical": {
+    "precision": 0.638,
+    "recall": 0.556,
+    "f1": 0.594,
+    "support": 54
+   },
+   "High": {
+    "precision": 0.469,
+    "recall": 0.536,
+    "f1": 0.5,
+    "support": 84
+   },
+   "Low": {
+    "precision": 0.667,
+    "recall": 0.662,
+    "f1": 0.664,
+    "support": 145
+   },
+   "Medium": {
+    "precision": 0.577,
+    "recall": 0.563,
+    "f1": 0.57,
+    "support": 167
+   }
+  }
+ },
+ "sentiment_by_priority": {
+  "Critical": -0.237,
+  "High": -0.085,
+  "Low": -0.002,
+  "Medium": -0.044
+ },
+ "sentiment_share": {
+  "Neutral": 0.466,
+  "Negative": 0.347,
+  "Positive": 0.188
+ },
+ "ner_counts": {
+  "COURSE": 265,
+  "BUILDING": 158,
+  "DAY": 49,
+  "TIME": 12
+ },
+ "ner_engine": "domain regex rules (memory-optimised alternative to spaCy)",
+ "topics": {
+  "5": {
+   "topics": {
+    "Topic 1": [
+     "university",
+     "professor",
+     "online",
+     "access",
+     "course",
+     "student",
+     "requir",
+     "email"
+    ],
+    "Topic 2": [
+     "room",
+     "dorm",
+     "hall",
+     "floor",
+     "build",
+     "near",
+     "library",
+     "main"
+    ],
+    "Topic 3": [
+     "need",
+     "aid",
+     "financial",
+     "information",
+     "ra",
+     "course",
+     "loan",
+     "student"
+    ],
+    "Topic 4": [
+     "campu",
+     "need",
+     "student",
+     "hour",
+     "service",
+     "option",
+     "library",
+     "area"
+    ],
+    "Topic 5": [
+     "din",
+     "hall",
+     "roommate",
+     "serv",
+     "request",
+     "food",
+     "park",
+     "light"
+    ]
+   },
+   "crosstab": {
+    "index": [
+     "Topic 1",
+     "Topic 2",
+     "Topic 3",
+     "Topic 4",
+     "Topic 5"
+    ],
+    "columns": [
+     "Academic",
+     "Campus Life",
+     "Dining Services",
+     "Facilities",
+     "Financial Aid",
+     "Housing",
+     "IT Support"
+    ],
+    "values": [
+     [
+      296,
+      11,
+      1,
+      3,
+      50,
+      4,
+      445
+     ],
+     [
+      0,
+      26,
+      29,
+      356,
+      0,
+      250,
+      4
+     ],
+     [
+      143,
+      45,
+      0,
+      4,
+      373,
+      67,
+      23
+     ],
+     [
+      2,
+      341,
+      28,
+      52,
+      2,
+      20,
+      57
+     ],
+     [
+      18,
+      14,
+      194,
+      29,
+      11,
+      101,
+      1
+     ]
+    ]
+   },
+   "perplexity": 611.0
+  },
+  "7": {
+   "topics": {
+    "Topic 1": [
+     "university",
+     "access",
+     "online",
+     "requir",
+     "email",
+     "class",
+     "software",
+     "unable"
+    ],
+    "Topic 2": [
+     "room",
+     "dorm",
+     "hall",
+     "build",
+     "floor",
+     "near",
+     "main",
+     "library"
+    ],
+    "Topic 3": [
+     "need",
+     "aid",
+     "financial",
+     "information",
+     "ra",
+     "loan",
+     "student",
+     "advisor"
+    ],
+    "Topic 4": [
+     "campu",
+     "need",
+     "student",
+     "service",
+     "option",
+     "center",
+     "event",
+     "study"
+    ],
+    "Topic 5": [
+     "din",
+     "hall",
+     "serv",
+     "request",
+     "food",
+     "today",
+     "staff",
+     "soup"
+    ],
+    "Topic 6": [
+     "roommate",
+     "light",
+     "room",
+     "student",
+     "park",
+     "library",
+     "consistently",
+     "account"
+    ],
+    "Topic 7": [
+     "professor",
+     "course",
+     "grad",
+     "provide",
+     "grade",
+     "registration",
+     "paper",
+     "lab"
+    ]
+   },
+   "crosstab": {
+    "index": [
+     "Topic 1",
+     "Topic 2",
+     "Topic 3",
+     "Topic 4",
+     "Topic 5",
+     "Topic 6",
+     "Topic 7"
+    ],
+    "columns": [
+     "Academic",
+     "Campus Life",
+     "Dining Services",
+     "Facilities",
+     "Financial Aid",
+     "Housing",
+     "IT Support"
+    ],
+    "values": [
+     [
+      96,
+      15,
+      0,
+      4,
+      20,
+      7,
+      445
+     ],
+     [
+      1,
+      18,
+      16,
+      321,
+      0,
+      215,
+      3
+     ],
+     [
+      89,
+      14,
+      0,
+      1,
+      357,
+      65,
+      10
+     ],
+     [
+      2,
+      309,
+      23,
+      36,
+      7,
+      8,
+      24
+     ],
+     [
+      30,
+      4,
+      186,
+      3,
+      20,
+      16,
+      1
+     ],
+     [
+      5,
+      50,
+      11,
+      72,
+      28,
+      130,
+      10
+     ],
+     [
+      236,
+      27,
+      16,
+      7,
+      4,
+      1,
+      37
+     ]
+    ]
+   },
+   "perplexity": 631.6
+  },
+  "10": {
+   "topics": {
+    "Topic 1": [
+     "university",
+     "online",
+     "access",
+     "requir",
+     "professor",
+     "software",
+     "class",
+     "course"
+    ],
+    "Topic 2": [
+     "room",
+     "dorm",
+     "hall",
+     "water",
+     "window",
+     "floor",
+     "house",
+     "mak"
+    ],
+    "Topic 3": [
+     "aid",
+     "financial",
+     "need",
+     "information",
+     "advisor",
+     "scholarship",
+     "academic",
+     "package"
+    ],
+    "Topic 4": [
+     "campu",
+     "need",
+     "student",
+     "work",
+     "study",
+     "service",
+     "hour",
+     "library"
+    ],
+    "Topic 5": [
+     "email",
+     "request",
+     "grade",
+     "account",
+     "professor",
+     "student",
+     "final",
+     "exam"
+    ],
+    "Topic 6": [
+     "roommate",
+     "need",
+     "room",
+     "campu",
+     "consistently",
+     "feel",
+     "security",
+     "clean"
+    ],
+    "Topic 7": [
+     "course",
+     "professor",
+     "lab",
+     "major",
+     "online",
+     "grad",
+     "concern",
+     "chem"
+    ],
+    "Topic 8": [
+     "need",
+     "student",
+     "campu",
+     "loan",
+     "center",
+     "option",
+     "offer",
+     "understand"
+    ],
+    "Topic 9": [
+     "hall",
+     "din",
+     "serv",
+     "food",
+     "option",
+     "today",
+     "salad",
+     "staff"
+    ],
+    "Topic 10": [
+     "library",
+     "build",
+     "floor",
+     "near",
+     "main",
+     "light",
+     "elevator",
+     "restroom"
+    ]
+   },
+   "crosstab": {
+    "index": [
+     "Topic 1",
+     "Topic 2",
+     "Topic 3",
+     "Topic 4",
+     "Topic 5",
+     "Topic 6",
+     "Topic 7",
+     "Topic 8",
+     "Topic 9",
+     "Topic 10"
+    ],
+    "columns": [
+     "Academic",
+     "Campus Life",
+     "Dining Services",
+     "Facilities",
+     "Financial Aid",
+     "Housing",
+     "IT Support"
+    ],
+    "values": [
+     [
+      118,
+      10,
+      0,
+      3,
+      5,
+      3,
+      289
+     ],
+     [
+      0,
+      8,
+      9,
+      92,
+      0,
+      206,
+      3
+     ],
+     [
+      71,
+      12,
+      0,
+      0,
+      263,
+      35,
+      18
+     ],
+     [
+      1,
+      226,
+      8,
+      21,
+      22,
+      6,
+      93
+     ],
+     [
+      112,
+      3,
+      5,
+      2,
+      47,
+      17,
+      49
+     ],
+     [
+      0,
+      43,
+      1,
+      16,
+      8,
+      124,
+      29
+     ],
+     [
+      135,
+      37,
+      2,
+      5,
+      2,
+      7,
+      30
+     ],
+     [
+      20,
+      78,
+      4,
+      9,
+      89,
+      6,
+      14
+     ],
+     [
+      0,
+      13,
+      221,
+      5,
+      0,
+      3,
+      1
+     ],
+     [
+      2,
+      7,
+      2,
+      291,
+      0,
+      35,
+      4
+     ]
+    ]
+   },
+   "perplexity": 637.9
+  }
+ }
+}

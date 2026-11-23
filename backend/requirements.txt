@@ -1,0 +1,11 @@
+# Backend runtime dependencies — pinned for reproducibility
+fastapi==0.165.0
+uvicorn==0.54.0
+python-multipart==0.0.34
+numpy==2.4.6
+vaderSentiment==3.3.2
+langdetect==1.0.9
+deep-translator==1.11.4
+pypdf==5.9.0
+requests
+# dev only: pytest, httpx

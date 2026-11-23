@@ -1,0 +1,14 @@
+# Render Blueprint: New + > Blueprint > select this repo.
+# Single free docker web service with local SQLite database (no external DB service required).
+services:
+  - type: web
+    name: resolveai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
