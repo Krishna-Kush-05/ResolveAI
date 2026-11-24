@@ -55,6 +55,24 @@ def save(result: dict) -> int:
              now, result.get("status", "pending"), result.get("resolved_at")))
         return cur.lastrowid
 
+def save_many(results: list[dict]) -> list[int]:
+    """Insert a batch in one SQLite transaction and return its row IDs."""
+    if not results:
+        return []
+    now = datetime.now(timezone.utc).isoformat()
+    values = [(r["text"], r["english_text"], r["language"], r["category"], r["priority"],
+               r["confidence"], r["sentiment"], r["sentiment_score"], json.dumps(r.get("entities", [])),
+               json.dumps(r.get("reply")), now, r.get("status", "pending"), r.get("resolved_at"))
+              for r in results]
+    with _conn() as c:
+        c.executemany(
+            """INSERT INTO grievances
+               (text, english_text, language, category, priority, confidence,
+                sentiment, sentiment_score, entities, reply, created_at, status, resolved_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+        last_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return list(range(last_id - len(results) + 1, last_id + 1))
+
 def _row_to_dict(row: sqlite3.Row) -> dict:
     """Convert a database row to a dict matching the API response format."""
     d = dict(row)

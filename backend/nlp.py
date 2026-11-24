@@ -4,7 +4,7 @@ entity extraction, language detection + translation, LLM (prompts + Gemini + off
 file extraction (TXT / PDF / CSV).
 """
 import csv as csv_mod
-import inspect, io, json, re, random
+import inspect, io, json, re, random, time
 import numpy as np, requests
 from functools import lru_cache
 from pathlib import Path
@@ -22,15 +22,16 @@ MAX_TEXT_CHARS = 2000
 MAX_BATCH_ROWS = 100
 MAX_FILE_BYTES = 2 * 1024 * 1024
 _GEMINI_INVALID = False
+_GEMINI_SKIP_UNTIL = 0.0
 
 def get_api_key() -> str:
     return os.environ.get("GEMINI_API_KEY", "").strip()
 
 def gemini_available() -> bool:
-    return bool(get_api_key()) and not _GEMINI_INVALID
+    return bool(get_api_key()) and not _GEMINI_INVALID and time.monotonic() >= _GEMINI_SKIP_UNTIL
 
 def get_gemini_models() -> list[str]:
-    return [m for m in [os.environ.get("GEMINI_MODEL"), "gemini-3.8-flash", "gemini-3.5-flash", "gemini-flash-latest"] if m]
+    return [os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash"]
 
 # ===================== MODEL LOADING =====================
 @lru_cache(maxsize=1)
@@ -147,7 +148,7 @@ def _explain(cleaned: str, target: str, label: str, top_n: int = 5) -> list[dict
     ranked = sorted(zip(idx, contributions), key=lambda pair: abs(float(pair[1])), reverse=True)[:top_n]
     return [{"term": inv_vocab[i], "weight": round(float(weight), 4)} for i, weight in ranked]
 
-def classify_detailed(text: str) -> dict:
+def classify_detailed(text: str, include_explanation: bool = True) -> dict:
     """Classify with model scores, compact feature contributions and domain rules."""
     model = get_model()
     cleaned = clean(text)
@@ -166,8 +167,9 @@ def classify_detailed(text: str) -> dict:
         "priority_probs": {k: round(float(v), 3) for k, v in sorted(priority_probs.items())},
         "priority_source": source,
         "matched_rules": matched,
-        "explanation": {"category_terms": _explain(cleaned, "category", cat),
-                        "priority_terms": _explain(cleaned, "priority", model_priority)},
+        "explanation": ({"category_terms": _explain(cleaned, "category", cat),
+                         "priority_terms": _explain(cleaned, "priority", model_priority)}
+                        if include_explanation else {"category_terms": [], "priority_terms": []}),
         "needs_review": confidence < 0.5,
         "top_categories": [{"category": name, "probability": round(float(prob), 3)}
                            for name, prob in top_categories] if confidence < 0.5 else [],
@@ -227,9 +229,9 @@ def detect_language(text: str) -> str:
 
 _TRANS_CACHE: dict = {}
 
-def to_english(text: str) -> tuple[str, str, str | None]:
+def to_english(text: str, allow_gemini: bool = True, detected_language: str | None = None) -> tuple[str, str, str | None]:
     """Translate text to English. Returns (english_text, language_code, service_used)."""
-    lang = detect_language(text)
+    lang = detected_language or detect_language(text)
     if lang == "en":
         return text, "en", None
     if text in _TRANS_CACHE:
@@ -239,12 +241,14 @@ def to_english(text: str) -> tuple[str, str, str | None]:
         _TRANS_CACHE[text] = t
         return t, lang, s
 
-    if get_api_key():
+    if allow_gemini and get_api_key() and gemini_available():
         try:
-            t, m = call_gemini(f"Translate to English. Output ONLY the translation:\n{text}", timeout=15)
+            t, m = call_gemini(f"Translate to English. Output ONLY the translation:\n{text}", timeout=6)
             return ok(t.strip(), f"Gemini ({m})")
         except Exception:
             pass
+    if not allow_gemini:
+        return text, lang, "unavailable (original text used)"
     try:
         from deep_translator import GoogleTranslator
         return ok(GoogleTranslator(source="auto", target="en").translate(text), "Google Translate")
@@ -283,19 +287,20 @@ Return ONLY valid JSON with exactly these keys:
 {{"summary": "max 20 words", "department": "office that should handle it", "action": "one concrete next step", "reply": "polite reply, exactly 3 sentences"}}
 Rules: be empathetic; do not promise outcomes; do not invent facts that are not in the grievance; mention the response time '{sla}'."""
 
-def call_gemini(prompt: str, as_json: bool = False, timeout: int = 25) -> tuple[str, str]:
+def call_gemini(prompt: str, as_json: bool = False, timeout: int = 8) -> tuple[str, str]:
     api_key = get_api_key()
     if not api_key:
         raise RuntimeError("No GEMINI_API_KEY configured")
     cfg = {"responseMimeType": "application/json"} if as_json else {}
     last = ""
-    for m in dict.fromkeys(get_gemini_models()):
+    global _GEMINI_SKIP_UNTIL
+    for m in get_gemini_models()[:1]:
         try:
             response = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
                 headers={"x-goog-api-key": api_key},
                 json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": cfg},
-                timeout=timeout,
+                timeout=min(timeout, 8),
             )
             if response.status_code in (401, 403):
                 global _GEMINI_INVALID
@@ -309,9 +314,12 @@ def call_gemini(prompt: str, as_json: bool = False, timeout: int = 25) -> tuple[
                 return r["candidates"][0]["content"]["parts"][0]["text"], m
             last = f"{m}: {r.get('error', {}).get('message', str(r))[:150]}"
         except RuntimeError:
+            _GEMINI_SKIP_UNTIL = time.monotonic() + 60
             raise
         except Exception as e:
             last = f"{m}: {type(e).__name__}"
+            _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+    _GEMINI_SKIP_UNTIL = time.monotonic() + 60
     raise RuntimeError(last if last and "HTTPError" not in last else "Gemini is temporarily unavailable. Please try again later.")
 
 def offline_reply(cat: str, pri: str) -> dict:
@@ -395,9 +403,10 @@ def extract_file(name: str, raw: bytes) -> dict:
     return {"kind": "text", "name": name, "text": body[:MAX_TEXT_CHARS]}
 
 # ===================== FULL PIPELINE =====================
-def analyze(text: str, with_reply: bool = True) -> dict:
-    english, lang, svc = to_english(text)
-    cls = classify_detailed(english)
+def analyze(text: str, with_reply: bool = True, include_explanation: bool = True,
+            translation: tuple[str, str, str | None] | None = None) -> dict:
+    english, lang, svc = translation or to_english(text)
+    cls = classify_detailed(english, include_explanation=include_explanation)
     sen, score = sentiment(english)
     ents = extract_entities(english)
     reply = make_reply(english, cls["category"], cls["priority"], sen, ents) if with_reply else None
@@ -420,7 +429,7 @@ def analyze(text: str, with_reply: bool = True) -> dict:
         "warning": warning,
     }
 
-def find_similar(english_text: str, rows: list[dict], exclude_id: int | None = None) -> list[dict]:
+def find_similar(english_text: str, rows: list[dict], exclude_id: int | None = None, max_seconds: float | None = None) -> list[dict]:
     """Find the closest stored grievances with the exported TF-IDF features."""
     model = get_model()
     query_idx, query_values = model.vectorize(clean(english_text))
@@ -428,7 +437,10 @@ def find_similar(english_text: str, rows: list[dict], exclude_id: int | None = N
         return []
     query = dict(zip(query_idx.tolist(), query_values.tolist()))
     matches = []
+    deadline = time.monotonic() + max_seconds if max_seconds is not None else None
     for row in rows:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         if row["id"] == exclude_id:
             continue
         idx, values = model.vectorize(clean(row["english_text"]))

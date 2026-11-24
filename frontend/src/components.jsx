@@ -141,7 +141,7 @@ export function InputPanel({ text, setText, source, setSource, onAnalyze, busy }
         </select>
         {(text || source) && <Button variant="ghost" onClick={clear}>Clear</Button>}
         <span className="spacer" />
-        <Button loading={busy} disabled={tooShort || loading} onClick={onAnalyze}>
+        <Button loading={busy} disabled={tooShort || loading} onClick={() => onAnalyze()}>
           {source ? `Analyze ${source.texts.length} grievances` : "Analyze"}
         </Button>
       </div>

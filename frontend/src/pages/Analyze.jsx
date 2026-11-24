@@ -33,13 +33,18 @@ export default function Analyze() {
     }
     setBusy(true); setError(null); setSingle(null); setBatch(null);
     try {
-      if (activeSource) setBatch(await api.analyzeBatch(activeSource.texts));
+      if (activeSource) {
+        const result = await api.analyzeBatch(activeSource.texts);
+        if (!Array.isArray(result?.results) || !result.results.length) throw new Error("The batch analysis returned no results. Please try again.");
+        setBatch(result);
+      }
       else {
         const result = await api.analyze(activeText.trim());
+        if (!result?.category || !result?.priority) throw new Error("The analysis response was incomplete. Please try again.");
         setSingle(result);
         if (result.reply?.source === "offline template" && result.reply?.note?.includes("unavailable")) setLlmUnavailable(true);
       }
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(e?.message || "Analysis failed. Please try again."); }
     finally { setBusy(false); }
   };
 
@@ -64,8 +69,8 @@ export default function Analyze() {
         </div>}
       </Card>
       <InputPanel text={text} setText={setText} source={source} setSource={setSource} onAnalyze={analyze} busy={busy} />
-      {error && <Alert onClose={() => setError(null)}>{error}</Alert>}
-      {busy && <Card><div className="center"><Spinner label="Analysing" /><p className="muted">Analysing{source ? ` ${source.texts.length} grievances` : ""}...</p></div></Card>}
+      {error && <div className="stack"><Alert onClose={() => setError(null)}>{error}</Alert><button className="btn btn-secondary" type="button" onClick={() => analyze()} disabled={busy}>Try again</button></div>}
+      {busy && <Card><div className="center"><Spinner label="Analysing" /><p className="muted">Analysing {source ? source.texts.length : 1} grievances. The first request can take up to a minute while the server wakes up.</p></div></Card>}
       {!busy && (single || batch) && <Results single={single} batch={batch} />}
       {!busy && !single && !batch && !error && <Card><EmptyState title="No results yet" text="Enter a grievance or load a sample, then press Analyze." /></Card>}
       <p className="analyze-footer">AI-assisted suggestions. Review before acting on any grievance. <a href="https://github.com/Krishna-Kush-05/ResolveAI" target="_blank" rel="noopener noreferrer">ResolveAI on GitHub</a></p>

@@ -3,7 +3,7 @@ Covers: analyse, bad inputs, TXT/PDF/CSV extraction, path traversal,
 batch, history CRUD, source whitelist, steps, metrics, and multilingual.
 Run: cd backend && python -m pytest test_api.py -v
 """
-import csv, os, sys, tempfile
+import csv, os, sys, tempfile, time
 from pathlib import Path
 
 # Point to a temp DB so tests don't touch any real data
@@ -250,3 +250,31 @@ def test_explanation_and_priority_rule():
     assert nlp._priority_rules("I enjoy fireworks", "Low")[1] == "model"
     assert nlp._priority_rules("No water for three days", "Low")[0] == "High"
     assert nlp._priority_rules("No water for three days", "Low")[0] == "High"
+
+
+def test_real_sample_batch_and_letters(monkeypatch):
+    # Keep this real-file API exercise deterministic and fully offline.
+    monkeypatch.setattr(nlp, "to_english", lambda text, **kwargs: (text, kwargs.get("detected_language") or "en", None))
+    with TestClient(app) as c:
+        csv_path = nlp.SAMPLES_DIR / "grievances_batch.csv"
+        extracted = c.post("/api/extract", files={"file": (csv_path.name, csv_path.read_bytes(), "text/csv")})
+        assert extracted.status_code == 200
+        texts = extracted.json()["texts"]
+        assert len(texts) == 25
+        started = time.perf_counter()
+        batch = c.post("/api/analyze/batch", json={"texts": texts})
+        elapsed = time.perf_counter() - started
+        assert batch.status_code == 200, batch.text
+        result = batch.json()
+        assert result["count"] == 25 and len(result["results"]) == 25
+        assert elapsed < 10, f"25-row sample batch took {elapsed:.2f}s"
+        assert all(r["category"] and r["priority"] and r["id"] for r in result["results"])
+
+        for filename in ("letter_1.txt", "letter_6.pdf"):
+            response = c.get(f"/api/samples/{filename}")
+            assert response.status_code == 200, response.text
+            text = response.json()["text"]
+            analysed = c.post("/api/analyze", json={"text": text})
+            assert analysed.status_code == 200, analysed.text
+            data = analysed.json()
+            assert data["category"] and data["priority"] and data["reply"]

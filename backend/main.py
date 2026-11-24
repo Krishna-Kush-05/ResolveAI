@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
     db.init_db()                       # create the table on first start
     nlp.get_model()                    # load model into memory once
     nlp.get_ner()                      # initialise the NER pipeline
+    nlp.analyze("Wi-Fi is not working in Cedar Hall.", with_reply=False, include_explanation=False)
     log.info("ResolveAI server ready — model loaded, DB initialised")
     yield
 
@@ -100,7 +101,11 @@ def analyze(body: dict):
     result["status"] = "pending"
     result["resolved_at"] = None
     result["id"] = db.save(result)
-    result["similar"] = nlp.find_similar(result["english_text"], db.get_recent_for_similarity(500), result["id"])
+    try:
+        result["similar"] = nlp.find_similar(result["english_text"], db.get_recent_for_similarity(200), result["id"], max_seconds=1.5)
+    except Exception:
+        log.exception("Similar grievance lookup failed")
+        result["similar"] = []
     return result
 
 @app.post("/api/analyze/batch")
@@ -111,12 +116,24 @@ def analyze_batch(body: dict):
         raise HTTPException(422, "No grievances to analyse.")
     if len(texts) > nlp.MAX_BATCH_ROWS:
         raise HTTPException(422, f"Too many rows (max {nlp.MAX_BATCH_ROWS}).")
-    out = [nlp.analyze(t, with_reply=False) for t in texts]
-    for r in out:
+    out = []
+    translated_count = 0
+    for t in texts:
+        lang = nlp.detect_language(t)
+        if lang == "en":
+            translation = (t, lang, None)
+        elif translated_count < 10:
+            translated_count += 1
+            translation = nlp.to_english(t, allow_gemini=False, detected_language=lang)
+        else:
+            translation = (t, lang, "unavailable (original text used)")
+        r = nlp.analyze(t, with_reply=False, include_explanation=False, translation=translation)
         r["status"] = "pending"
         r["resolved_at"] = None
-        r["id"] = db.save(r)
-        r["similar"] = nlp.find_similar(r["english_text"], db.get_recent_for_similarity(500), r["id"])
+        r["similar"] = []
+        out.append(r)
+    for r, gid in zip(out, db.save_many(out)):
+        r["id"] = gid
     by = lambda k: {v: sum(1 for r in out if r[k] == v) for v in sorted({r[k] for r in out})}
     return {"count": len(out), "by_priority": by("priority"), "by_category": by("category"), "results": out}
 
