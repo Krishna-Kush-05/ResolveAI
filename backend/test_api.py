@@ -4,6 +4,7 @@ batch, history CRUD, source whitelist, steps, metrics, and multilingual.
 Run: cd backend && python -m pytest test_api.py -v
 """
 import csv, os, sys, tempfile, time
+import pytest
 from pathlib import Path
 
 # Point to a temp DB so tests don't touch any real data
@@ -278,3 +279,66 @@ def test_real_sample_batch_and_letters(monkeypatch):
             assert analysed.status_code == 200, analysed.text
             data = analysed.json()
             assert data["category"] and data["priority"] and data["reply"]
+
+
+def test_gemini_success_uses_configured_model_and_safe_key_header(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-secret-value")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+    monkeypatch.setattr(nlp, "_GEMINI_INVALID", False)
+    monkeypatch.setattr(nlp, "_GEMINI_SKIP_UNTIL", 0.0)
+    monkeypatch.setattr(nlp, "_GEMINI_LAST_ERROR", None)
+    seen = {}
+
+    class Response:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": '{"summary":"Dynamic","department":"Office","action":"Review","reply":"One. Two. Three."}'}]}}]}
+
+    def post(url, **kwargs):
+        seen.update(url=url, **kwargs)
+        return Response()
+
+    monkeypatch.setattr(nlp.requests, "post", post)
+    result = nlp.make_reply("The Wi-Fi is broken in the library.", "IT Support", "Medium", "Negative", [])
+    assert result["source"] == "gemini-3.8-flash" and result["summary"] == "Dynamic"
+    assert seen["url"].endswith("/models/gemini-3.8-flash:generateContent")
+    assert seen["headers"]["x-goog-api-key"] == "test-secret-value"
+    assert seen["timeout"] <= 8
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    (401, "invalid_key"), (403, "invalid_key"), (404, "unsupported_model"),
+    (429, "quota"), (503, "server_error"),
+])
+def test_gemini_http_failures_are_diagnosed_and_fall_back(monkeypatch, status, expected):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-secret-value")
+    monkeypatch.setattr(nlp, "_GEMINI_INVALID", False)
+    monkeypatch.setattr(nlp, "_GEMINI_SKIP_UNTIL", 0.0)
+    monkeypatch.setattr(nlp, "_GEMINI_LAST_ERROR", None)
+
+    class Response:
+        status_code = status
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: Response())
+    result = nlp.make_reply("The Wi-Fi is broken in the library.", "IT Support", "Medium", "Negative", [])
+    assert result["source"] == "offline template"
+    assert nlp.gemini_diagnostics()["state"] == expected
+    assert "test-secret-value" not in result["note"]
+
+
+def test_gemini_timeout_and_missing_key_preserve_offline_reply(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-secret-value")
+    monkeypatch.setattr(nlp, "_GEMINI_INVALID", False)
+    monkeypatch.setattr(nlp, "_GEMINI_SKIP_UNTIL", 0.0)
+    monkeypatch.setattr(nlp, "_GEMINI_LAST_ERROR", None)
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(nlp.requests.Timeout()))
+    timed_out = nlp.make_reply("A broken heater.", "Housing", "High", "Negative", [])
+    assert timed_out["source"] == "offline template"
+    assert nlp.gemini_diagnostics()["state"] == "timeout"
+
+    monkeypatch.delenv("GEMINI_API_KEY")
+    missing = nlp.make_reply("A broken heater.", "Housing", "High", "Negative", [])
+    assert missing["source"] == "offline template"
+    assert "GEMINI_API_KEY is not set" in missing["note"]

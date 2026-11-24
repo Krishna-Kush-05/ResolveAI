@@ -4,7 +4,7 @@ entity extraction, language detection + translation, LLM (prompts + Gemini + off
 file extraction (TXT / PDF / CSV).
 """
 import csv as csv_mod
-import inspect, io, json, re, random, time
+import inspect, io, json, re, random, time, logging
 import numpy as np, requests
 from functools import lru_cache
 from pathlib import Path
@@ -23,6 +23,8 @@ MAX_BATCH_ROWS = 100
 MAX_FILE_BYTES = 2 * 1024 * 1024
 _GEMINI_INVALID = False
 _GEMINI_SKIP_UNTIL = 0.0
+_GEMINI_LAST_ERROR: tuple[str, str] | None = None
+log = logging.getLogger("resolveai.gemini")
 
 def get_api_key() -> str:
     return os.environ.get("GEMINI_API_KEY", "").strip()
@@ -31,7 +33,24 @@ def gemini_available() -> bool:
     return bool(get_api_key()) and not _GEMINI_INVALID and time.monotonic() >= _GEMINI_SKIP_UNTIL
 
 def get_gemini_models() -> list[str]:
-    return [os.environ.get("GEMINI_MODEL") or "gemini-3.5-flash"]
+    return [os.environ.get("GEMINI_MODEL") or "gemini-3.8-flash"]
+
+def gemini_diagnostics() -> dict:
+    configured = bool(get_api_key())
+    if not configured:
+        state, message = "missing_key", "GEMINI_API_KEY is not set; using offline replies."
+    elif _GEMINI_INVALID:
+        state, message = "invalid_key", "Gemini rejected the API key; check GEMINI_API_KEY in Render."
+    elif time.monotonic() < _GEMINI_SKIP_UNTIL:
+        state, message = _GEMINI_LAST_ERROR or ("cooldown", "Gemini is temporarily unavailable; using offline replies.")
+    else:
+        state, message = "ready", "Gemini is configured and ready."
+    return {"configured": configured, "ready": gemini_available(), "model": get_gemini_models()[0],
+            "state": state, "message": message}
+
+def log_gemini_configuration() -> None:
+    status = gemini_diagnostics()
+    log.info("Gemini startup: configured=%s model=%s transport=REST", status["configured"], status["model"])
 
 # ===================== MODEL LOADING =====================
 @lru_cache(maxsize=1)
@@ -292,9 +311,10 @@ def call_gemini(prompt: str, as_json: bool = False, timeout: int = 8) -> tuple[s
     if not api_key:
         raise RuntimeError("No GEMINI_API_KEY configured")
     cfg = {"responseMimeType": "application/json"} if as_json else {}
-    last = ""
-    global _GEMINI_SKIP_UNTIL
-    for m in get_gemini_models()[:1]:
+    global _GEMINI_SKIP_UNTIL, _GEMINI_LAST_ERROR
+    model = get_gemini_models()[0]
+    log.info("Gemini request started: model=%s json=%s", model, as_json)
+    for m in [model]:
         try:
             response = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
@@ -305,22 +325,67 @@ def call_gemini(prompt: str, as_json: bool = False, timeout: int = 8) -> tuple[s
             if response.status_code in (401, 403):
                 global _GEMINI_INVALID
                 _GEMINI_INVALID = True
-                raise RuntimeError("Gemini key is invalid or lacks permission.")
+                message = "Gemini authentication failed (401/403). Check GEMINI_API_KEY permissions."
+                _GEMINI_LAST_ERROR = ("invalid_key", message)
+                _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+                log.error("Gemini authentication error: status=%s model=%s", response.status_code, m)
+                raise RuntimeError(message)
             if response.status_code == 429:
-                raise RuntimeError("Gemini is busy right now. Please try again later.")
+                message = "Gemini quota or rate limit reached (429). Check Google AI Studio usage and billing."
+                _GEMINI_LAST_ERROR = ("quota", message)
+                _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+                log.warning("Gemini quota/rate limit: status=429 model=%s", m)
+                raise RuntimeError(message)
+            if response.status_code == 404:
+                message = f"Gemini model '{m}' is unavailable (404). Check GEMINI_MODEL."
+                _GEMINI_LAST_ERROR = ("unsupported_model", message)
+                _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+                log.error("Gemini model error: status=404 model=%s", m)
+                raise RuntimeError(message)
+            if response.status_code >= 400:
+                status_code = response.status_code
+                category = "server_error" if status_code >= 500 else "request_error"
+                message = f"Gemini request failed (HTTP {status_code}); using offline replies."
+                _GEMINI_LAST_ERROR = (category, message)
+                _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+                log.error("Gemini API error: status=%s model=%s", status_code, m)
+                raise RuntimeError(message)
             response.raise_for_status()
             r = response.json()
-            if "candidates" in r:
-                return r["candidates"][0]["content"]["parts"][0]["text"], m
-            last = f"{m}: {r.get('error', {}).get('message', str(r))[:150]}"
+            try:
+                text = r["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError, TypeError):
+                message = "Gemini returned no usable text (response may have been blocked)."
+                _GEMINI_LAST_ERROR = ("empty_response", message)
+                _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+                log.error("Gemini response contained no candidate text: model=%s", m)
+                raise RuntimeError(message)
+            _GEMINI_LAST_ERROR = None
+            log.info("Gemini response generated: model=%s", m)
+            return text, m
+        except requests.Timeout:
+            message = "Gemini request timed out; using offline replies."
+            _GEMINI_LAST_ERROR = ("timeout", message)
+            _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+            log.warning("Gemini timeout: model=%s timeout_seconds=%s", m, min(timeout, 8))
+            raise RuntimeError(message)
+        except requests.RequestException as e:
+            message = "Gemini could not be reached; using offline replies."
+            _GEMINI_LAST_ERROR = ("network_error", message)
+            _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+            log.error("Gemini network error: model=%s error=%s", m, type(e).__name__)
+            raise RuntimeError(message)
         except RuntimeError:
+            if _GEMINI_LAST_ERROR is None:
+                _GEMINI_LAST_ERROR = ("request_error", "Gemini request failed; using offline replies.")
             _GEMINI_SKIP_UNTIL = time.monotonic() + 60
             raise
         except Exception as e:
-            last = f"{m}: {type(e).__name__}"
+            message = "Gemini response could not be parsed; using offline replies."
+            _GEMINI_LAST_ERROR = ("response_error", message)
             _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-    _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-    raise RuntimeError(last if last and "HTTPError" not in last else "Gemini is temporarily unavailable. Please try again later.")
+            log.exception("Gemini response handling failed: model=%s error=%s", m, type(e).__name__)
+            raise RuntimeError(message) from e
 
 def offline_reply(cat: str, pri: str) -> dict:
     d = DEPT.get(cat, "Student Section")
@@ -337,18 +402,29 @@ def build_prompt(text: str, cat: str, pri: str, sen: str, ents: list[dict]) -> s
                             ents=[e["text"] for e in ents], sla=SLA.get(pri, "within 10 working days"))
 
 def make_reply(text: str, cat: str, pri: str, sen: str, ents: list[dict]) -> dict:
+    global _GEMINI_LAST_ERROR, _GEMINI_SKIP_UNTIL
     if not get_api_key():
-        return {**offline_reply(cat, pri), "note": "AI assistant is not configured; showing a standard template."}
+        log.warning("Gemini unavailable: GEMINI_API_KEY is not configured; activating offline reply")
+        return {**offline_reply(cat, pri), "note": gemini_diagnostics()["message"]}
     if not gemini_available():
-        return {**offline_reply(cat, pri), "note": "AI assistant is unavailable; showing a standard template."}
+        diagnostic = gemini_diagnostics()
+        log.warning("Gemini unavailable: state=%s; activating offline reply", diagnostic["state"])
+        return {**offline_reply(cat, pri), "note": diagnostic["message"]}
     try:
         out, model = call_gemini(build_prompt(text, cat, pri, sen, ents), as_json=True)
         r = json.loads(out)
         if not all(k in r for k in ("summary", "department", "action", "reply")):
             raise ValueError("incomplete JSON")
         return {**r, "source": model}
-    except Exception:
-        return {**offline_reply(cat, pri), "note": "AI assistant is unavailable right now; showing a standard template."}
+    except Exception as e:
+        if _GEMINI_LAST_ERROR:
+            diagnostic = _GEMINI_LAST_ERROR[1]
+        else:
+            diagnostic = "Gemini returned a response that could not be parsed; using offline replies."
+            _GEMINI_LAST_ERROR = ("invalid_response", diagnostic)
+            _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+        log.warning("Gemini generation failed; activating offline reply: error=%s", type(e).__name__)
+        return {**offline_reply(cat, pri), "note": diagnostic}
 
 # ===================== FILE EXTRACTION =====================
 class FileError(ValueError):

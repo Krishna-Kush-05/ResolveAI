@@ -16,7 +16,7 @@ export default function Analyze() {
     catch { return false; }
   });
 
-  useEffect(() => { api.health().then((h) => setLlmUnavailable(!h.llm_configured)).catch(() => {}); }, []);
+  useEffect(() => { api.health().then((h) => setLlmUnavailable(h.llm_configured ? false : (h.gemini?.message || "Gemini is unavailable; offline replies are active."))).catch(() => {}); }, []);
 
   const toggleHow = () => setHowOpen((open) => {
     const next = !open;
@@ -42,7 +42,7 @@ export default function Analyze() {
         const result = await api.analyze(activeText.trim());
         if (!result?.category || !result?.priority) throw new Error("The analysis response was incomplete. Please try again.");
         setSingle(result);
-        if (result.reply?.source === "offline template" && result.reply?.note?.includes("unavailable")) setLlmUnavailable(true);
+        setLlmUnavailable(result.reply?.source === "offline template" ? (result.reply.note || "Gemini is unavailable; offline replies are active.") : false);
       }
     } catch (e) { setError(e?.message || "Analysis failed. Please try again."); }
     finally { setBusy(false); }
@@ -59,7 +59,7 @@ export default function Analyze() {
           <button onClick={() => { const value = "मेरे छात्रावास में तीन दिनों से पानी नहीं है।"; setText(value); setSource(null); analyze(value); }}>हिंदी example</button>
         </div>
       </section>
-      {llmUnavailable && <Alert kind="info">AI-drafted replies are currently unavailable. Classification and sentiment still work.</Alert>}
+      {llmUnavailable && <Alert kind="info">{typeof llmUnavailable === "string" ? llmUnavailable : "Gemini is unavailable; offline replies are active."} Classification and sentiment still work.</Alert>}
       <Card className="how-card">
         <button className="how-toggle" type="button" onClick={toggleHow} aria-expanded={howOpen}>How it works <span aria-hidden="true">{howOpen ? "−" : "+"}</span></button>
         {howOpen && <div className="how-content">

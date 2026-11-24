@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
     nlp.get_model()                    # load model into memory once
     nlp.get_ner()                      # initialise the NER pipeline
     nlp.analyze("Wi-Fi is not working in Cedar Hall.", with_reply=False, include_explanation=False)
+    nlp.log_gemini_configuration()
     log.info("ResolveAI server ready — model loaded, DB initialised")
     yield
 
@@ -61,7 +62,7 @@ async def unexpected(_: Request, e: Exception):
 # ===================== HEALTH =====================
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "llm_configured": nlp.gemini_available(),
+    return {"status": "ok", "llm_configured": nlp.gemini_available(), "gemini": nlp.gemini_diagnostics(),
             "ner": nlp.get_ner()[1]}
 
 # ===================== SAMPLES =====================
