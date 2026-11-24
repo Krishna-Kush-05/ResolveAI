@@ -12,3 +12,5 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-3.8-flash
+      - key: ADMIN_DIAGNOSTIC_TOKEN
+        sync: false

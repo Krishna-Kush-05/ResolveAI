@@ -6,6 +6,7 @@ file extraction (TXT / PDF / CSV).
 import csv as csv_mod
 import inspect, io, json, re, random, time, logging
 import numpy as np, requests
+from urllib3.util import Timeout as RequestTimeout
 from functools import lru_cache
 from pathlib import Path
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -306,51 +307,72 @@ Return ONLY valid JSON with exactly these keys:
 {{"summary": "max 20 words", "department": "office that should handle it", "action": "one concrete next step", "reply": "polite reply, exactly 3 sentences"}}
 Rules: be empathetic; do not promise outcomes; do not invent facts that are not in the grievance; mention the response time '{sla}'."""
 
-def call_gemini(prompt: str, as_json: bool = False, timeout: int = 8) -> tuple[str, str]:
+def call_gemini(prompt: str, as_json: bool = False, timeout: int = 45) -> tuple[str, str]:
     api_key = get_api_key()
     if not api_key:
         raise RuntimeError("No GEMINI_API_KEY configured")
     cfg = {"responseMimeType": "application/json"} if as_json else {}
     global _GEMINI_SKIP_UNTIL, _GEMINI_LAST_ERROR
     model = get_gemini_models()[0]
-    log.info("Gemini request started: model=%s json=%s", model, as_json)
+    connect_timeout = min(5, timeout)
+    read_timeout = timeout
+    started = time.monotonic()
+    log.info("event=gemini_called key_detected=true model=%s", model)
+    log.info("event=gemini_request_started model=%s json=%s connect_timeout=%ss read_timeout=%ss total_timeout=%ss retries=0",
+             model, as_json, connect_timeout, read_timeout, timeout)
     for m in [model]:
         try:
+            request_timeout = RequestTimeout(total=timeout, connect=connect_timeout, read=read_timeout)
             response = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent",
                 headers={"x-goog-api-key": api_key},
                 json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": cfg},
-                timeout=min(timeout, 8),
+                timeout=request_timeout,
             )
+            elapsed = time.monotonic() - started
+            log.info("event=gemini_response_received model=%s http_status=%s response_header_elapsed_ms=%s total_elapsed_ms=%s",
+                     m, response.status_code, round(response.elapsed.total_seconds() * 1000), round(elapsed * 1000))
             if response.status_code in (401, 403):
                 global _GEMINI_INVALID
-                _GEMINI_INVALID = True
-                message = "Gemini authentication failed (401/403). Check GEMINI_API_KEY permissions."
-                _GEMINI_LAST_ERROR = ("invalid_key", message)
+                detail = _google_error_message(response, api_key)
+                if response.status_code == 401:
+                    _GEMINI_INVALID = True
+                    state, message = "invalid_key", "Gemini rejected GEMINI_API_KEY (401). Check the key in Render."
+                else:
+                    state, message = "permission_denied", "Gemini denied this API key (403). Check API access and key restrictions."
+                _GEMINI_LAST_ERROR = (state, f"{message} {detail}".strip())
                 _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-                log.error("Gemini authentication error: status=%s model=%s", response.status_code, m)
-                raise RuntimeError(message)
+                log.error("event=gemini_api_error classification=%s status=%s model=%s elapsed_ms=%s detail=%s",
+                          state, response.status_code, m, round(elapsed * 1000), detail)
+                raise RuntimeError(_GEMINI_LAST_ERROR[1])
             if response.status_code == 429:
+                detail = _google_error_message(response, api_key)
                 message = "Gemini quota or rate limit reached (429). Check Google AI Studio usage and billing."
-                _GEMINI_LAST_ERROR = ("quota", message)
+                _GEMINI_LAST_ERROR = ("quota", f"{message} {detail}".strip())
                 _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-                log.warning("Gemini quota/rate limit: status=429 model=%s", m)
-                raise RuntimeError(message)
+                log.warning("event=gemini_api_error classification=quota status=429 model=%s elapsed_ms=%s detail=%s",
+                            m, round(elapsed * 1000), detail)
+                raise RuntimeError(_GEMINI_LAST_ERROR[1])
             if response.status_code == 404:
-                message = f"Gemini model '{m}' is unavailable (404). Check GEMINI_MODEL."
-                _GEMINI_LAST_ERROR = ("unsupported_model", message)
+                detail = _google_error_message(response, api_key)
+                message = f"Gemini model '{m}' was not found (404). Check GEMINI_MODEL."
+                _GEMINI_LAST_ERROR = ("unsupported_model", f"{message} {detail}".strip())
                 _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-                log.error("Gemini model error: status=404 model=%s", m)
-                raise RuntimeError(message)
+                log.error("event=gemini_api_error classification=unsupported_model status=404 model=%s elapsed_ms=%s detail=%s",
+                          m, round(elapsed * 1000), detail)
+                raise RuntimeError(_GEMINI_LAST_ERROR[1])
             if response.status_code >= 400:
                 status_code = response.status_code
                 category = "server_error" if status_code >= 500 else "request_error"
-                message = f"Gemini request failed (HTTP {status_code}); using offline replies."
-                _GEMINI_LAST_ERROR = (category, message)
+                detail = _google_error_message(response, api_key)
+                message = f"Gemini request failed (HTTP {status_code})."
+                _GEMINI_LAST_ERROR = (category, f"{message} {detail}".strip())
                 _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-                log.error("Gemini API error: status=%s model=%s", status_code, m)
-                raise RuntimeError(message)
+                log.error("event=gemini_api_error classification=%s status=%s model=%s elapsed_ms=%s detail=%s",
+                          category, status_code, m, round(elapsed * 1000), detail)
+                raise RuntimeError(_GEMINI_LAST_ERROR[1])
             response.raise_for_status()
+            parse_started = time.monotonic()
             r = response.json()
             try:
                 text = r["candidates"][0]["content"]["parts"][0]["text"]
@@ -358,22 +380,46 @@ def call_gemini(prompt: str, as_json: bool = False, timeout: int = 8) -> tuple[s
                 message = "Gemini returned no usable text (response may have been blocked)."
                 _GEMINI_LAST_ERROR = ("empty_response", message)
                 _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-                log.error("Gemini response contained no candidate text: model=%s", m)
+                log.error("event=gemini_response_parse_error model=%s elapsed_ms=%s",
+                          m, round((time.monotonic() - started) * 1000))
                 raise RuntimeError(message)
             _GEMINI_LAST_ERROR = None
-            log.info("Gemini response generated: model=%s", m)
+            log.info("event=gemini_response_parsed model=%s parse_ms=%s",
+                     m, round((time.monotonic() - parse_started) * 1000))
+            log.info("event=gemini_generation_completed model=%s total_elapsed_ms=%s",
+                     m, round((time.monotonic() - started) * 1000))
             return text, m
-        except requests.Timeout:
-            message = "Gemini request timed out; using offline replies."
-            _GEMINI_LAST_ERROR = ("timeout", message)
+        except requests.ConnectTimeout as e:
+            message = "Timed out connecting to Gemini; check Render outbound DNS/network access."
+            _GEMINI_LAST_ERROR = ("connect_timeout", message)
             _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-            log.warning("Gemini timeout: model=%s timeout_seconds=%s", m, min(timeout, 8))
+            log.warning("event=gemini_timeout classification=connect_timeout model=%s elapsed_ms=%s exception=%s",
+                        m, round((time.monotonic() - started) * 1000), type(e).__name__)
+            raise RuntimeError(message)
+        except requests.ReadTimeout as e:
+            message = "Gemini response timed out while waiting for generated content."
+            _GEMINI_LAST_ERROR = ("read_timeout", message)
+            _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+            log.warning("event=gemini_timeout classification=read_timeout model=%s elapsed_ms=%s exception=%s",
+                        m, round((time.monotonic() - started) * 1000), type(e).__name__)
+            raise RuntimeError(message)
+        except requests.Timeout as e:
+            message = "Gemini request exceeded its overall timeout."
+            _GEMINI_LAST_ERROR = ("request_timeout", message)
+            _GEMINI_SKIP_UNTIL = time.monotonic() + 60
+            log.warning("event=gemini_timeout classification=request_timeout model=%s elapsed_ms=%s exception=%s",
+                        m, round((time.monotonic() - started) * 1000), type(e).__name__)
             raise RuntimeError(message)
         except requests.RequestException as e:
-            message = "Gemini could not be reached; using offline replies."
-            _GEMINI_LAST_ERROR = ("network_error", message)
+            detail = str(e).replace(api_key, "[redacted]")[:300]
+            detail = re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[redacted]@", detail)
+            lower_error = detail.lower()
+            state = "dns_error" if any(s in lower_error for s in ("nameresolutionerror", "getaddrinfo", "name or service not known", "temporary failure in name resolution")) else "tls_error" if isinstance(e, requests.exceptions.SSLError) else "proxy_error" if isinstance(e, requests.exceptions.ProxyError) else "network_error"
+            message = "Gemini DNS lookup failed." if state == "dns_error" else "Gemini TLS connection failed." if state == "tls_error" else "Gemini proxy connection failed." if state == "proxy_error" else "Gemini connection failed."
+            _GEMINI_LAST_ERROR = (state, message)
             _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-            log.error("Gemini network error: model=%s error=%s", m, type(e).__name__)
+            log.error("event=gemini_connection_error classification=%s model=%s elapsed_ms=%s exception=%s detail=%s",
+                      state, m, round((time.monotonic() - started) * 1000), type(e).__name__, detail)
             raise RuntimeError(message)
         except RuntimeError:
             if _GEMINI_LAST_ERROR is None:
@@ -386,6 +432,97 @@ def call_gemini(prompt: str, as_json: bool = False, timeout: int = 8) -> tuple[s
             _GEMINI_SKIP_UNTIL = time.monotonic() + 60
             log.exception("Gemini response handling failed: model=%s error=%s", m, type(e).__name__)
             raise RuntimeError(message) from e
+
+def _google_error_message(response, api_key: str) -> str:
+    try:
+        message = response.json().get("error", {}).get("message", "")
+        return str(message).replace(api_key, "[redacted]")[:400]
+    except Exception:
+        return ""
+
+def run_gemini_diagnostic() -> dict:
+    """Make one isolated, real GenerateContent call without retries or offline fallback."""
+    api_key = get_api_key()
+    model = get_gemini_models()[0]
+    started = time.monotonic()
+    log.info("event=gemini_diagnostic_started key_detected=%s model=%s", bool(api_key), model)
+    if not api_key:
+        return {"api_connectivity": "not_configured", "http_status": None, "model": model,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+                "real_response_received": False, "response_text": None,
+                "error_classification": "missing_key",
+                "error": "GEMINI_API_KEY is not configured in this process."}
+
+    try:
+        response = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"x-goog-api-key": api_key},
+            json={"contents": [{"parts": [{"text": "Reply with exactly: GEMINI_CONNECTION_SUCCESS"}]}],
+                  "generationConfig": {}},
+            timeout=RequestTimeout(total=45, connect=5, read=45),
+        )
+    except requests.ConnectTimeout as e:
+        return _diagnostic_failure(model, started, "connect_timeout", type(e).__name__, "Connection to Google timed out.")
+    except requests.ReadTimeout as e:
+        return _diagnostic_failure(model, started, "read_timeout", type(e).__name__, "Google did not return generated content before the read timeout.")
+    except requests.Timeout as e:
+        return _diagnostic_failure(model, started, "request_timeout", type(e).__name__, "The Gemini request exceeded its overall timeout.")
+    except requests.exceptions.SSLError as e:
+        return _diagnostic_failure(model, started, "tls_error", type(e).__name__, "TLS verification or handshake with Google failed.")
+    except requests.exceptions.ProxyError as e:
+        return _diagnostic_failure(model, started, "proxy_error", type(e).__name__, "The configured outbound proxy could not reach Google.")
+    except requests.RequestException as e:
+        detail = str(e).replace(api_key, "[redacted]")[:300]
+        detail = re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[redacted]@", detail)
+        lower = detail.lower()
+        category = "dns_error" if any(x in lower for x in ("nameresolutionerror", "getaddrinfo", "name or service not known", "temporary failure in name resolution")) else "connection_error"
+        return _diagnostic_failure(model, started, category, type(e).__name__, detail or "Google connection failed.")
+
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    status = response.status_code
+    log.info("event=gemini_diagnostic_http_response model=%s status=%s ttfb_ms=%s total_ms=%s",
+             model, status, round(response.elapsed.total_seconds() * 1000), elapsed_ms)
+    if status == 401:
+        category, message = "invalid_key", "Google rejected the Gemini API key."
+    elif status == 403:
+        category, message = "permission_denied", "Google denied this key or its API permissions."
+    elif status == 404:
+        category, message = "model_not_found", f"Google could not find model '{model}'."
+    elif status == 429:
+        category, message = "quota_exceeded", "Google rate limit or quota was reached."
+    elif status >= 500:
+        category, message = "google_server_error", "Google returned a server error."
+    elif status >= 400:
+        category, message = "google_request_error", f"Google rejected the request with HTTP {status}."
+    else:
+        category, message = None, None
+    if category:
+        detail = _google_error_message(response, api_key)
+        log.warning("event=gemini_diagnostic_failed classification=%s status=%s model=%s total_ms=%s detail=%s",
+                    category, status, model, elapsed_ms, detail)
+        return {"api_connectivity": "connected", "http_status": status, "model": model,
+                "duration_ms": elapsed_ms, "real_response_received": False, "response_text": None,
+                "error_classification": category, "error": f"{message} {detail}".strip()}
+    try:
+        data = response.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        log.error("event=gemini_diagnostic_parse_failed status=%s model=%s total_ms=%s", status, model, elapsed_ms)
+        return {"api_connectivity": "connected", "http_status": status, "model": model,
+                "duration_ms": elapsed_ms, "real_response_received": False, "response_text": None,
+                "error_classification": "invalid_response", "error": "Google returned HTTP success but no usable generated text."}
+    log.info("event=gemini_diagnostic_succeeded model=%s status=%s total_ms=%s", model, status, elapsed_ms)
+    return {"api_connectivity": "connected", "http_status": status, "model": model,
+            "duration_ms": elapsed_ms, "real_response_received": True,
+            "response_text": text[:200], "error_classification": None, "error": None}
+
+def _diagnostic_failure(model: str, started: float, category: str, exception: str, message: str) -> dict:
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    log.warning("event=gemini_diagnostic_failed classification=%s model=%s total_ms=%s exception=%s",
+                category, model, elapsed_ms, exception)
+    return {"api_connectivity": "unreachable", "http_status": None, "model": model,
+            "duration_ms": elapsed_ms, "real_response_received": False, "response_text": None,
+            "error_classification": category, "error": message}
 
 def offline_reply(cat: str, pri: str) -> dict:
     d = DEPT.get(cat, "Student Section")
@@ -403,12 +540,14 @@ def build_prompt(text: str, cat: str, pri: str, sen: str, ents: list[dict]) -> s
 
 def make_reply(text: str, cat: str, pri: str, sen: str, ents: list[dict]) -> dict:
     global _GEMINI_LAST_ERROR, _GEMINI_SKIP_UNTIL
+    reply_started = time.monotonic()
     if not get_api_key():
-        log.warning("Gemini unavailable: GEMINI_API_KEY is not configured; activating offline reply")
+        log.warning("event=gemini_offline_fallback reason=missing_key elapsed_ms=%s", round((time.monotonic() - reply_started) * 1000))
         return {**offline_reply(cat, pri), "note": gemini_diagnostics()["message"]}
     if not gemini_available():
         diagnostic = gemini_diagnostics()
-        log.warning("Gemini unavailable: state=%s; activating offline reply", diagnostic["state"])
+        log.warning("event=gemini_offline_fallback reason=%s elapsed_ms=%s",
+                    diagnostic["state"], round((time.monotonic() - reply_started) * 1000))
         return {**offline_reply(cat, pri), "note": diagnostic["message"]}
     try:
         out, model = call_gemini(build_prompt(text, cat, pri, sen, ents), as_json=True)
@@ -423,7 +562,10 @@ def make_reply(text: str, cat: str, pri: str, sen: str, ents: list[dict]) -> dic
             diagnostic = "Gemini returned a response that could not be parsed; using offline replies."
             _GEMINI_LAST_ERROR = ("invalid_response", diagnostic)
             _GEMINI_SKIP_UNTIL = time.monotonic() + 60
-        log.warning("Gemini generation failed; activating offline reply: error=%s", type(e).__name__)
+        log.warning("event=gemini_offline_fallback reason=%s elapsed_ms=%s exception=%s",
+                    _GEMINI_LAST_ERROR[0] if _GEMINI_LAST_ERROR else "unknown",
+                    round((time.monotonic() - reply_started) * 1000),
+                    type(e).__name__)
         return {**offline_reply(cat, pri), "note": diagnostic}
 
 # ===================== FILE EXTRACTION =====================

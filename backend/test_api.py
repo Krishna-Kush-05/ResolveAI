@@ -291,6 +291,7 @@ def test_gemini_success_uses_configured_model_and_safe_key_header(monkeypatch):
 
     class Response:
         status_code = 200
+        elapsed = __import__("datetime").timedelta(0)
         def raise_for_status(self): pass
         def json(self):
             return {"candidates": [{"content": {"parts": [{"text": '{"summary":"Dynamic","department":"Office","action":"Review","reply":"One. Two. Three."}'}]}}]}
@@ -304,11 +305,13 @@ def test_gemini_success_uses_configured_model_and_safe_key_header(monkeypatch):
     assert result["source"] == "gemini-3.8-flash" and result["summary"] == "Dynamic"
     assert seen["url"].endswith("/models/gemini-3.8-flash:generateContent")
     assert seen["headers"]["x-goog-api-key"] == "test-secret-value"
-    assert seen["timeout"] <= 8
+    assert seen["timeout"].total == 45
+    assert seen["timeout"].connect_timeout == 5
+    assert seen["timeout"].read_timeout == 45
 
 
 @pytest.mark.parametrize(("status", "expected"), [
-    (401, "invalid_key"), (403, "invalid_key"), (404, "unsupported_model"),
+    (401, "invalid_key"), (403, "permission_denied"), (404, "unsupported_model"),
     (429, "quota"), (503, "server_error"),
 ])
 def test_gemini_http_failures_are_diagnosed_and_fall_back(monkeypatch, status, expected):
@@ -319,6 +322,7 @@ def test_gemini_http_failures_are_diagnosed_and_fall_back(monkeypatch, status, e
 
     class Response:
         status_code = status
+        elapsed = __import__("datetime").timedelta(0)
         def raise_for_status(self): pass
 
     monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: Response())
@@ -328,17 +332,144 @@ def test_gemini_http_failures_are_diagnosed_and_fall_back(monkeypatch, status, e
     assert "test-secret-value" not in result["note"]
 
 
-def test_gemini_timeout_and_missing_key_preserve_offline_reply(monkeypatch):
+@pytest.mark.parametrize(("timeout_error", "expected_state"), [
+    (nlp.requests.ConnectTimeout, "connect_timeout"),
+    (nlp.requests.ReadTimeout, "read_timeout"),
+    (nlp.requests.Timeout, "request_timeout"),
+])
+def test_gemini_timeout_and_missing_key_preserve_offline_reply(monkeypatch, timeout_error, expected_state):
     monkeypatch.setenv("GEMINI_API_KEY", "test-secret-value")
     monkeypatch.setattr(nlp, "_GEMINI_INVALID", False)
     monkeypatch.setattr(nlp, "_GEMINI_SKIP_UNTIL", 0.0)
     monkeypatch.setattr(nlp, "_GEMINI_LAST_ERROR", None)
-    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(nlp.requests.Timeout()))
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(timeout_error()))
     timed_out = nlp.make_reply("A broken heater.", "Housing", "High", "Negative", [])
     assert timed_out["source"] == "offline template"
-    assert nlp.gemini_diagnostics()["state"] == "timeout"
+    assert nlp.gemini_diagnostics()["state"] == expected_state
 
     monkeypatch.delenv("GEMINI_API_KEY")
     missing = nlp.make_reply("A broken heater.", "Housing", "High", "Negative", [])
     assert missing["source"] == "offline template"
     assert "GEMINI_API_KEY is not set" in missing["note"]
+
+
+def test_gemini_diagnostic_real_request_shape_and_isolation(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "diagnostic-test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+    before = (nlp._GEMINI_INVALID, nlp._GEMINI_SKIP_UNTIL, nlp._GEMINI_LAST_ERROR)
+    seen = {}
+
+    class Response:
+        status_code = 200
+        elapsed = __import__("datetime").timedelta(milliseconds=120)
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": "GEMINI_CONNECTION_SUCCESS"}]}}]}
+
+    def post(url, **kwargs):
+        seen.update(url=url, **kwargs)
+        return Response()
+
+    monkeypatch.setattr(nlp.requests, "post", post)
+    result = nlp.run_gemini_diagnostic()
+    assert result["api_connectivity"] == "connected" and result["http_status"] == 200
+    assert result["real_response_received"] is True
+    assert result["response_text"] == "GEMINI_CONNECTION_SUCCESS"
+    assert seen["url"].endswith("/models/gemini-3.8-flash:generateContent")
+    assert seen["headers"]["x-goog-api-key"] == "diagnostic-test-key"
+    assert seen["json"]["contents"][0]["parts"][0]["text"] == "Reply with exactly: GEMINI_CONNECTION_SUCCESS"
+    assert seen["timeout"].total == 45
+    assert before == (nlp._GEMINI_INVALID, nlp._GEMINI_SKIP_UNTIL, nlp._GEMINI_LAST_ERROR)
+
+
+@pytest.mark.parametrize(("exception", "classification"), [
+    (nlp.requests.ConnectTimeout, "connect_timeout"),
+    (nlp.requests.ReadTimeout, "read_timeout"),
+])
+def test_gemini_diagnostic_timeout_classification(monkeypatch, exception, classification):
+    monkeypatch.setenv("GEMINI_API_KEY", "diagnostic-test-key")
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(exception()))
+    result = nlp.run_gemini_diagnostic()
+    assert result["api_connectivity"] == "unreachable"
+    assert result["error_classification"] == classification
+    assert result["http_status"] is None
+
+
+@pytest.mark.parametrize(("status", "classification"), [
+    (401, "invalid_key"), (403, "permission_denied"), (404, "model_not_found"), (429, "quota_exceeded"),
+])
+def test_gemini_diagnostic_provider_error_classification(monkeypatch, status, classification):
+    monkeypatch.setenv("GEMINI_API_KEY", "diagnostic-test-key")
+
+    class Response:
+        status_code = status
+        elapsed = __import__("datetime").timedelta(milliseconds=1)
+        def json(self): return {"error": {"message": "safe test diagnostic"}}
+
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: Response())
+    result = nlp.run_gemini_diagnostic()
+    assert result["http_status"] == status
+    assert result["error_classification"] == classification
+    assert result["real_response_received"] is False
+
+
+def test_admin_gemini_diagnostic_requires_bearer_token(monkeypatch):
+    monkeypatch.delenv("ADMIN_DIAGNOSTIC_TOKEN", raising=False)
+    with TestClient(app) as c:
+        assert c.post("/api/admin/gemini-test").status_code == 503
+
+    monkeypatch.setenv("ADMIN_DIAGNOSTIC_TOKEN", "local-admin-test-token")
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not call Google")))
+    with TestClient(app) as c:
+        assert c.post("/api/admin/gemini-test").status_code == 401
+        assert c.post("/api/admin/gemini-test", headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_admin_gemini_diagnostic_success_does_not_save_history(monkeypatch):
+    monkeypatch.setenv("ADMIN_DIAGNOSTIC_TOKEN", "local-admin-test-token")
+    monkeypatch.setenv("GEMINI_API_KEY", "diagnostic-test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+
+    class Response:
+        status_code = 200
+        elapsed = __import__("datetime").timedelta(milliseconds=3)
+        def json(self): return {"candidates": [{"content": {"parts": [{"text": "GEMINI_CONNECTION_SUCCESS"}]}}]}
+
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: Response())
+    before = __import__("db").get_history()
+    with TestClient(app) as c:
+        response = c.post("/api/admin/gemini-test", headers={"Authorization": "Bearer local-admin-test-token"})
+    result = response.json()
+    assert response.status_code == 200
+    assert result["api_connectivity"] == "connected" and result["http_status"] == 200
+    assert result["model"] == "gemini-3.8-flash" and result["real_response_received"] is True
+    assert result["response_text"] == "GEMINI_CONNECTION_SUCCESS"
+    assert __import__("db").get_history() == before
+
+
+def test_admin_gemini_diagnostic_reports_timeout(monkeypatch):
+    monkeypatch.setenv("ADMIN_DIAGNOSTIC_TOKEN", "local-admin-test-token")
+    monkeypatch.setenv("GEMINI_API_KEY", "diagnostic-test-key")
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(nlp.requests.ReadTimeout()))
+    with TestClient(app) as c:
+        response = c.post("/api/admin/gemini-test", headers={"Authorization": "Bearer local-admin-test-token"})
+    assert response.status_code == 200
+    assert response.json()["error_classification"] == "read_timeout"
+    assert response.json()["http_status"] is None
+
+
+@pytest.mark.parametrize(("status", "classification"), [(401, "invalid_key"), (429, "quota_exceeded")])
+def test_admin_gemini_diagnostic_reports_google_auth_and_quota(monkeypatch, status, classification):
+    monkeypatch.setenv("ADMIN_DIAGNOSTIC_TOKEN", "local-admin-test-token")
+    monkeypatch.setenv("GEMINI_API_KEY", "diagnostic-test-key")
+
+    class Response:
+        status_code = status
+        elapsed = __import__("datetime").timedelta(milliseconds=2)
+        def json(self): return {"error": {"message": "safe provider error"}}
+
+    monkeypatch.setattr(nlp.requests, "post", lambda *args, **kwargs: Response())
+    with TestClient(app) as c:
+        response = c.post("/api/admin/gemini-test", headers={"Authorization": "Bearer local-admin-test-token"})
+    assert response.status_code == 200
+    assert response.json()["http_status"] == status
+    assert response.json()["error_classification"] == classification

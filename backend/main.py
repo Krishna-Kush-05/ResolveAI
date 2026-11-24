@@ -2,7 +2,7 @@
 Single file: config from env, all routes, serves the built React frontend.
 Run: uvicorn main:app --reload --port 8000
 """
-import json, logging, os
+import json, logging, os, secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,7 +14,7 @@ if _env_file.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip().strip('"'))
 
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -60,6 +60,21 @@ async def unexpected(_: Request, e: Exception):
     return JSONResponse({"detail": "Something went wrong on the server. Please try again."}, status_code=500)
 
 # ===================== HEALTH =====================
+def require_admin_diagnostic(request: Request):
+    expected = os.environ.get("ADMIN_DIAGNOSTIC_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(503, "Admin Gemini diagnostics are disabled; configure ADMIN_DIAGNOSTIC_TOKEN.")
+    scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(401, "Administrator authentication required.", headers={"WWW-Authenticate": "Bearer"})
+
+
+@app.post("/api/admin/gemini-test", dependencies=[Depends(require_admin_diagnostic)])
+def admin_gemini_test():
+    """Send an isolated authenticated test prompt directly to Gemini."""
+    return nlp.run_gemini_diagnostic()
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "llm_configured": nlp.gemini_available(), "gemini": nlp.gemini_diagnostics(),
